@@ -22,9 +22,11 @@ build() {
 
 package() {
   cd "$startdir/.."
-  install -Dm755 build/omascan "$pkgdir/usr/bin/omascan"
-  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 src/ui/icons/LICENSE.lucide "$pkgdir/usr/share/licenses/$pkgname/LICENSE.lucide"
-  install -Dm644 "$startdir/omascan.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/omascan.svg"
-  install -Dm644 "$startdir/omascan.desktop" "$pkgdir/usr/share/applications/omascan.desktop"
+  # The system's install(1), never this repo's bin/install when bin/ is on PATH.
+  local install=/usr/bin/install
+  "$install" -Dm755 build/omascan "$pkgdir/usr/bin/omascan"
+  "$install" -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  "$install" -Dm644 src/ui/icons/LICENSE.lucide "$pkgdir/usr/share/licenses/$pkgname/LICENSE.lucide"
+  "$install" -Dm644 "$startdir/omascan.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/omascan.svg"
+  "$install" -Dm644 "$startdir/omascan.desktop" "$pkgdir/usr/share/applications/omascan.desktop"
 }
