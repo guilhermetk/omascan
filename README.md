@@ -220,3 +220,15 @@ How it fits together:
 - Icons are [Lucide](https://lucide.dev) (ISC licence). To add one, put its
   name in `tools/icons.txt` and run `tools/gen-icons.py`. After adding a QML
   file, run `tools/gen-qrc.sh`.
+
+## Licence
+
+OmaScan is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See [LICENSE](LICENSE) for the full text.
+
+The icons are from [Lucide](https://lucide.dev), under the ISC licence (see
+[src/ui/icons/LICENSE.lucide](src/ui/icons/LICENSE.lucide)).
+
+Copyright (C) 2026 Guilherme Tiscoski.
