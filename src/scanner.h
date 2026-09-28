@@ -117,6 +117,7 @@ private:
     qreal m_progress = -1;
     int m_pagesThisRun = 0;
     int m_runResolution = 0;
+    QString m_run;          // names this run's files in incoming/
     QString m_singleOutput;
     QString m_stderrTail;
     bool m_cancelled = false;

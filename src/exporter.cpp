@@ -373,7 +373,9 @@ QString Exporter::writePdf(const QList<Page> &pages, const QString &path, const 
 QString Exporter::writeOcrPdf(const QList<Page> &pages, const QString &path, const QVariantMap &options) {
     const QString paper = options.value(QStringLiteral("paper")).toString();
     const Quality quality = qualityFor(options.value(QStringLiteral("quality")).toString());
-    const QString language = options.value(QStringLiteral("language"), defaultOcrLanguage()).toString();
+    QString language = options.value(QStringLiteral("language")).toString();
+    if (!m_languages.contains(language))
+        language = defaultOcrLanguage();
 
     QTemporaryDir work;
     if (!work.isValid())
@@ -448,11 +450,20 @@ QString Exporter::writeOcrPdf(const QList<Page> &pages, const QString &path, con
         return tr("Text recognition failed: %1").arg(last.isEmpty() ? tr("no output") : last);
     }
 
-    if (QFileInfo::exists(path))
-        QFile::remove(path);
-    if (!QFile::rename(base + QStringLiteral(".pdf"), path)
-            && !QFile::copy(base + QStringLiteral(".pdf"), path))
+    // Replace the file in one step, so a failure leaves any old one intact.
+    QFile result(base + QStringLiteral(".pdf"));
+    QSaveFile file(path);
+    if (!result.open(QIODevice::ReadOnly) || !file.open(QIODevice::WriteOnly))
         return tr("Could not write to %1").arg(QFileInfo(path).fileName());
+    while (!result.atEnd()) {
+        const QByteArray chunk = result.read(1 << 20);
+        if (chunk.isEmpty() || file.write(chunk) != chunk.size()) {
+            file.cancelWriting();
+            break;
+        }
+    }
+    if (!file.commit())
+        return tr("Could not finish writing %1").arg(QFileInfo(path).fileName());
     report(1, tr("Done"));
     return {};
 }
@@ -480,7 +491,10 @@ QString Exporter::writeImages(const QList<Page> &pages, const QString &path, con
             ? info.absolutePath() + u'/' + info.completeBaseName() + u'.' + extension
             : QStringLiteral("%1/%2-%3.%4").arg(info.absolutePath(), info.completeBaseName())
                   .arg(i + 1, digits, 10, QLatin1Char('0')).arg(extension);
-        QImageWriter writer(name);
+        QSaveFile file(name);
+        if (!file.open(QIODevice::WriteOnly))
+            return tr("Could not write %1").arg(QFileInfo(name).fileName());
+        QImageWriter writer(&file, png ? "png" : "jpeg");
         if (png) {
             writer.setCompression(6);
             if (isBilevel(image))
@@ -488,7 +502,7 @@ QString Exporter::writeImages(const QList<Page> &pages, const QString &path, con
         } else {
             writer.setQuality(92);
         }
-        if (!writer.write(image))
+        if (!writer.write(image) || !file.commit())
             return tr("Could not write %1").arg(QFileInfo(name).fileName());
     }
     report(1, tr("Done"));

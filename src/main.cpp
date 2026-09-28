@@ -5,6 +5,10 @@
 #include <QEventLoop>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QImageReader>
+#include <QLockFile>
+#include <QProcess>
+#include <QStandardPaths>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
@@ -78,6 +82,20 @@ int main(int argc, char *argv[]) {
                             QStringLiteral("dir"));
     parser.addOption(shot);
     parser.process(app);
+
+    QImageReader::setAllocationLimit(PageRender::kImageLimitMiB);
+
+    // One window per session folder: a second one would save over the first
+    // one's pages, and could delete the pictures it thinks nobody uses.
+    QDir().mkpath(PageModel::defaultDir());
+    QLockFile lock(PageModel::defaultDir() + QStringLiteral("/.lock"));
+    if (!lock.tryLock(0)) {
+        const QString text = QStringLiteral("OmaScan is already open.");
+        qWarning("%s", qPrintable(text));
+        if (const QString notify = QStandardPaths::findExecutable(QStringLiteral("notify-send")); !notify.isEmpty())
+            QProcess::execute(notify, {QStringLiteral("--app-name=OmaScan"), text});
+        return 1;
+    }
 
     QQuickStyle::setStyle(QStringLiteral("OmaScanStyle"));
 

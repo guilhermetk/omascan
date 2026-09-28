@@ -30,6 +30,20 @@ bool isFeeder(const QString &source) {
     return feeder.match(source).hasMatch();
 }
 
+// A probe of the scanner that never answers (a network device gone quiet, a
+// wedged driver) would leave the window waiting forever.
+void giveUpAfter(QProcess *process, int ms) {
+    QTimer::singleShot(ms, process, [process] {
+        if (process->state() != QProcess::NotRunning)
+            process->kill();
+    });
+}
+
+// scanimage reads --batch as a printf format: any other % in it is ours.
+QString batchPattern(QString dir, const QString &run) {
+    return dir.replace(u'%', QStringLiteral("%%")) + u'/' + run + QStringLiteral("-%d.png");
+}
+
 QString localPaper() {
     return QLocale().measurementSystem() == QLocale::ImperialUSSystem
         ? QStringLiteral("Letter") : QStringLiteral("A4");
@@ -43,6 +57,10 @@ Scanner::Scanner(const QString &incomingDir, QObject *parent)
     m_program = !override.isEmpty() ? override
               : QStandardPaths::findExecutable(QStringLiteral("scanimage"));
     QDir().mkpath(m_incoming);
+    // Anything here is left from a scan that never finished.
+    QDir incoming(m_incoming);
+    for (const QString &name : incoming.entryList(QDir::Files | QDir::Hidden))
+        incoming.remove(name);
 
     QSettings settings;
     m_mode = settings.value(QStringLiteral("scan/mode")).toString();
@@ -94,6 +112,15 @@ void Scanner::refresh() {
     emit readyChanged();
     setStatus(tr("Looking for scanners…"));
 
+    connect(m_discover, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) {
+        if (e != QProcess::FailedToStart)
+            return;
+        m_discover->deleteLater();
+        m_discover = nullptr;
+        emit discoveringChanged();
+        emit readyChanged();
+        setStatus(tr("Could not run scanimage"));
+    });
     connect(m_discover, &QProcess::finished, this, [this](int, QProcess::ExitStatus) {
         const QString previous = deviceId().isEmpty()
             ? QSettings().value(QStringLiteral("scan/device")).toString() : deviceId();
@@ -129,10 +156,11 @@ void Scanner::refresh() {
 
     // One device per line; tabs never appear in SANE device names.
     m_discover->start(m_program, {QStringLiteral("-f"), QStringLiteral("%d\t%v\t%m\t%t%n")});
+    giveUpAfter(m_discover, 90000);
 }
 
 void Scanner::setDeviceIndex(int index) {
-    if (index == m_deviceIndex || index >= m_devices.size())
+    if (index == m_deviceIndex || index >= m_devices.size() || m_scan)
         return;
     m_deviceIndex = index;
     emit deviceIndexChanged();
@@ -156,6 +184,15 @@ void Scanner::loadOptions() {
     emit readyChanged();
     setStatus(tr("Talking to the scanner…"));
 
+    connect(m_options, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) {
+        if (e != QProcess::FailedToStart)
+            return;
+        m_options->deleteLater();
+        m_options = nullptr;
+        emit optionsChanged();
+        emit readyChanged();
+        setStatus(tr("Could not run scanimage"));
+    });
     connect(m_options, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
         const QString out = QString::fromLocal8Bit(m_options->readAllStandardOutput());
         const QString err = QString::fromLocal8Bit(m_options->readAllStandardError());
@@ -171,6 +208,7 @@ void Scanner::loadOptions() {
             setStatus(tr("Ready"));
     });
     m_options->start(m_program, {QStringLiteral("-d"), deviceId(), QStringLiteral("-A")});
+    giveUpAfter(m_options, 60000);
 }
 
 // Reads the option list scanimage prints for a device, e.g.
@@ -340,10 +378,11 @@ void Scanner::scan() {
     }
 
     const QString run = QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+    m_run = run;
     m_singleOutput.clear();
     if (feeder()) {
         // Pages arrive one at a time; --batch-print names each as it is done.
-        args << QStringLiteral("--batch=%1/%2-%d.png").arg(m_incoming, run)
+        args << QStringLiteral("--batch=") + batchPattern(m_incoming, run)
              << QStringLiteral("--batch-print");
     } else {
         m_singleOutput = QStringLiteral("%1/%2.png").arg(m_incoming, run);
@@ -387,13 +426,18 @@ void Scanner::cancel() {
 void Scanner::readScanOutput() {
     while (m_scan && m_scan->canReadLine()) {
         const QString line = QString::fromLocal8Bit(m_scan->readLine()).trimmed();
-        if (line.endsWith(QStringLiteral(".png")) && QFileInfo::exists(line))
-            deliver(line);
+        // Only the pages this run was asked to write, never any other file.
+        const QFileInfo file(line);
+        if (file.fileName().startsWith(m_run + u'-') && file.fileName().endsWith(QStringLiteral(".png"))
+                && file.absolutePath() == QFileInfo(m_incoming).absoluteFilePath() && file.isFile())
+            deliver(file.absoluteFilePath());
     }
 }
 
 void Scanner::readScanErrors() {
     static const QRegularExpression progress(QStringLiteral(R"(Progress:\s*([\d.]+)%)"));
+    if (!m_scan)
+        return;
     const QString chunk = QString::fromLocal8Bit(m_scan->readAllStandardError());
     auto matches = progress.globalMatch(chunk);
     qreal last = -1;
@@ -422,8 +466,10 @@ void Scanner::deliver(const QString &path) {
 void Scanner::scanFinished(int exitCode, QProcess::ExitStatus status) {
     if (!m_scan)
         return;
-    // Anything still buffered, e.g. the last --batch-print line.
+    // Anything still buffered, e.g. the last --batch-print line, and the
+    // last words on stderr, which say why it stopped.
     readScanOutput();
+    readScanErrors();
     m_scan->deleteLater();
     m_scan = nullptr;
 
@@ -432,9 +478,12 @@ void Scanner::scanFinished(int exitCode, QProcess::ExitStatus status) {
         const QFileInfo out(m_singleOutput);
         if (ok && out.exists() && out.size() > 0)
             deliver(m_singleOutput);
-        else
-            QFile::remove(m_singleOutput);
     }
+    // Delivered pages have moved into the session; what is left is a page cut
+    // short by a cancel or a jam.
+    QDir incoming(m_incoming);
+    for (const QString &name : incoming.entryList({m_run + u'*'}, QDir::Files))
+        incoming.remove(name);
     // A feeder that ran out after at least one page is the normal way to end.
     if (!ok && m_pagesThisRun > 0 && m_stderrTail.contains(QStringLiteral("out of documents"),
                                                           Qt::CaseInsensitive))

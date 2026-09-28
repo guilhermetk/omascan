@@ -1,6 +1,7 @@
 #include "pages.h"
 
 #include <QCache>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -10,6 +11,7 @@
 #include <QJsonObject>
 #include <QPainter>
 #include <QSaveFile>
+#include <QSet>
 #include <QStandardPaths>
 #include <QTransform>
 #include <QUuid>
@@ -208,7 +210,10 @@ QImage adaptiveThreshold(const QImage &grey, int threshold) {
         uchar *dst = out.scanLine(y);
         for (int x = 0; x < w; ++x) {
             const int x0 = std::max(0, x - half), x1 = std::min(w, x + half + 1);
-            const quint64 sum = quint64(integral[size_t(y1) * (w + 1) + x1])
+            // The table wraps past 2^32 on big scans (600 dpi and up); the
+            // box's own sum never does, so 32-bit wrapping arithmetic still
+            // gets it right. Widening before subtracting would not.
+            const quint32 sum = integral[size_t(y1) * (w + 1) + x1]
                               - integral[size_t(y0) * (w + 1) + x1]
                               - integral[size_t(y1) * (w + 1) + x0]
                               + integral[size_t(y0) * (w + 1) + x0];
@@ -303,6 +308,32 @@ QSize orientedSize(const QString &path) {
     return quarterTurn ? size.transposed() : size;
 }
 
+// Scans are documents people keep private: nobody else on the machine reads them.
+void makePrivate(const QString &path) {
+    QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+}
+
+// A resolution that can size a sheet of paper; anything else counts as unknown.
+qreal saneDpi(qreal dpi) {
+    return std::isfinite(dpi) && dpi >= 10 && dpi <= 20000 ? dpi : 0;
+}
+
+// The pictures the session keeps, as opposed to state.json and anything else.
+bool isPicture(const QString &name) {
+    return name.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive)
+        || name.endsWith(QStringLiteral(".jpg"), Qt::CaseInsensitive)
+        || name.endsWith(QStringLiteral(".jpeg"), Qt::CaseInsensitive)
+        || name.endsWith(QStringLiteral(".tif"), Qt::CaseInsensitive)
+        || name.endsWith(QStringLiteral(".tiff"), Qt::CaseInsensitive)
+        || name.endsWith(QStringLiteral(".pnm"), Qt::CaseInsensitive);
+}
+
+// Whether the picture fits under the decoder's memory limit once unpacked.
+bool fitsInMemory(QSize size) {
+    const int limit = QImageReader::allocationLimit();
+    return limit <= 0 || qint64(size.width()) * size.height() * 4 <= qint64(limit) * 1024 * 1024;
+}
+
 QJsonObject toJson(const Page &p) {
     return {
         {"id", p.id}, {"source", QFileInfo(p.source).fileName()}, {"rotation", p.rotation},
@@ -317,10 +348,15 @@ QJsonObject toJson(const Page &p) {
 PageModel::PageModel(QObject *parent) : QAbstractListModel(parent) {
     // Pages live on disk from the moment they are scanned, so closing the
     // window (or a crash) never loses a scan that has not been exported yet.
-    m_dir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
-            + QStringLiteral("/session");
+    m_dir = defaultDir();
     QDir().mkpath(m_dir);
+    makePrivate(m_dir);
     restore();
+}
+
+QString PageModel::defaultDir() {
+    return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+           + QStringLiteral("/session");
 }
 
 int PageModel::rowCount(const QModelIndex &parent) const {
@@ -414,16 +450,31 @@ void PageModel::addScan(const QString &path, qreal dpi) {
     // for a page; once whole, they join the session.
     QString source = path;
     if (QFileInfo(path).absolutePath() != QFileInfo(m_dir).absoluteFilePath()) {
+        // Only a file inside the session survives a restart, so a scan that
+        // cannot be moved there is copied, and one that cannot be copied
+        // either is not taken in as if it were safe.
         source = newSourcePath(QFileInfo(path).suffix());
-        if (!QFile::rename(path, source))
-            source = path;
+        if (!QFile::rename(path, source)) {
+            if (!QFile::copy(path, source)) {
+                QFile::remove(source);
+                emit message(tr("The scan could not be saved. Is the disk full?"));
+                return;
+            }
+            QFile::remove(path);
+        }
     }
     Page page;
     page.source = source;
-    page.dpi = dpi;
+    page.dpi = saneDpi(dpi);
     page.sourceSize = orientedSize(source);
     if (!page.sourceSize.isValid()) {
+        QFile::remove(source);
         emit message(tr("The scanner sent a picture that could not be read."));
+        return;
+    }
+    if (!fitsInMemory(page.sourceSize)) {
+        QFile::remove(source);
+        emit message(tr("That scan is too large to work with. Try a lower resolution."));
         return;
     }
     checkpoint(tr("Scan"));
@@ -483,7 +534,7 @@ void PageModel::duplicate(int index) {
 }
 
 void PageModel::rotate(int index, int degrees) {
-    if (!valid(index))
+    if (!valid(index) || degrees % 90 != 0 || degrees % 360 == 0)
         return;
     checkpoint(degrees > 0 ? tr("Rotate right") : tr("Rotate left"));
     Page &p = m_pages[index];
@@ -534,6 +585,7 @@ void PageModel::setAdjustment(int index, const QString &name, int value) {
     int *field = name == u"brightness" ? &p.brightness
                : name == u"contrast" ? &p.contrast
                : name == u"threshold" ? &p.threshold : nullptr;
+    value = std::clamp(value, field == &p.threshold ? 0 : -100, 100);
     if (!field || *field == value)
         return;
     *field = value;
@@ -666,37 +718,75 @@ void PageModel::save() const {
 
 void PageModel::restore() {
     QFile file(m_dir + QStringLiteral("/state.json"));
+    // Pictures newer than the last saved state belong to pages that state
+    // never heard of: a crash, or a full disk, between a scan and its save.
+    // With no readable state at all, every picture is such a page.
+    QDateTime savedAt;
     if (file.open(QIODevice::ReadOnly)) {
-        const QJsonObject state = QJsonDocument::fromJson(file.readAll()).object();
-        // An exported document is finished: start the new run empty, and let
-        // collectGarbage() below remove its pictures.
-        const QJsonArray saved = state.value("exported").toBool() ? QJsonArray() : state.value("pages").toArray();
-        for (const QJsonValue &v : saved) {
-            const QJsonObject o = v.toObject();
-            Page p;
-            p.id = nextId();
-            p.source = m_dir + u'/' + o.value("source").toString();
-            if (!QFileInfo::exists(p.source))
-                continue;
-            p.rotation = o.value("rotation").toInt();
-            const QJsonArray c = o.value("crop").toArray();
-            if (c.size() == 4)
-                p.crop = QRectF(c[0].toDouble(), c[1].toDouble(), c[2].toDouble(), c[3].toDouble());
-            p.filter = o.value("filter").toInt(Page::Enhanced);
-            p.brightness = o.value("brightness").toInt();
-            p.contrast = o.value("contrast").toInt();
-            p.threshold = o.value("threshold").toInt(50);
-            p.dpi = o.value("dpi").toDouble();
-            p.sourceSize = QSize(o.value("width").toInt(), o.value("height").toInt());
-            if (!p.sourceSize.isValid())
-                p.sourceSize = orientedSize(p.source);
-            m_pages.append(p);
+        QJsonParseError error;
+        const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &error);
+        if (error.error == QJsonParseError::NoError && document.isObject()) {
+            savedAt = QFileInfo(file).lastModified();
+            const QJsonObject state = document.object();
+            // An exported document is finished: start the new run empty, and
+            // let collectGarbage() below remove its pictures.
+            const QJsonArray saved = state.value("exported").toBool() ? QJsonArray() : state.value("pages").toArray();
+            for (const QJsonValue &v : saved) {
+                const QJsonObject o = v.toObject();
+                // Only a bare name: the file is inside the session or nowhere.
+                const QString name = QFileInfo(o.value("source").toString()).fileName();
+                Page p;
+                p.source = m_dir + u'/' + name;
+                if (name.isEmpty() || !isPicture(name) || !QFileInfo(p.source).isFile())
+                    continue;
+                p.id = nextId();
+                p.rotation = (o.value("rotation").toInt() / 90 % 4 + 4) % 4 * 90;
+                const QJsonArray c = o.value("crop").toArray();
+                const QRectF crop = c.size() == 4
+                    ? QRectF(c[0].toDouble(), c[1].toDouble(), c[2].toDouble(), c[3].toDouble())
+                          .intersected(QRectF(0, 0, 1, 1))
+                    : QRectF();
+                if (crop.width() >= 0.02 && crop.height() >= 0.02)
+                    p.crop = crop;
+                p.filter = std::clamp(o.value("filter").toInt(Page::Enhanced), 0, int(Page::BlackWhite));
+                p.brightness = std::clamp(o.value("brightness").toInt(), -100, 100);
+                p.contrast = std::clamp(o.value("contrast").toInt(), -100, 100);
+                p.threshold = std::clamp(o.value("threshold").toInt(50), 0, 100);
+                p.dpi = saneDpi(o.value("dpi").toDouble());
+                p.sourceSize = QSize(o.value("width").toInt(), o.value("height").toInt());
+                if (p.sourceSize.isEmpty())
+                    p.sourceSize = orientedSize(p.source);
+                if (p.sourceSize.isEmpty())
+                    continue;
+                m_pages.append(p);
+            }
+            m_current = state.value("current").toInt();
         }
-        m_current = m_pages.isEmpty() ? -1
-                  : std::clamp(state.value("current").toInt(), 0, int(m_pages.size()) - 1);
-        m_restoredCount = int(m_pages.size());
     }
+
+    QSet<QString> known;
+    for (const Page &p : std::as_const(m_pages))
+        known.insert(QFileInfo(p.source).fileName());
+    const QFileInfoList files = QDir(m_dir).entryInfoList(QDir::Files, QDir::Time | QDir::Reversed);
+    for (const QFileInfo &info : files) {
+        if (!isPicture(info.fileName()) || known.contains(info.fileName())
+                || (savedAt.isValid() && info.lastModified() <= savedAt))
+            continue;
+        Page p;
+        p.id = nextId();
+        p.source = info.absoluteFilePath();
+        p.sourceSize = orientedSize(p.source);
+        if (p.sourceSize.isEmpty())
+            continue;
+        m_pages.append(p);
+        m_current = int(m_pages.size()) - 1;
+    }
+
+    m_current = m_pages.isEmpty() ? -1 : std::clamp(m_current, 0, int(m_pages.size()) - 1);
+    m_restoredCount = int(m_pages.size());
     syncMirror();
+    if (!m_pages.isEmpty() || savedAt.isValid())
+        save();
     collectGarbage();
 }
 

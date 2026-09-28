@@ -2,8 +2,13 @@
 // survives a restart, and every export format written and readable.
 
 #include <QImage>
+#include <QImageReader>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPainter>
 #include <QProcess>
+#include <QSaveFile>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -80,6 +85,7 @@ class OmaScanTest : public QObject {
 private slots:
     void initTestCase() {
         qputenv("XDG_DATA_HOME", m_home.path().toLocal8Bit());
+        QImageReader::setAllocationLimit(PageRender::kImageLimitMiB);
         QStandardPaths::setTestModeEnabled(false);
         m_pictures << makePage(m_out.path(), QStringLiteral("a.png"), QStringLiteral("Invoice Alpha"))
                    << makePage(m_out.path(), QStringLiteral("b.png"), QStringLiteral("Receipt Bravo"))
@@ -264,6 +270,101 @@ private slots:
         QCOMPARE(Keys::text(QVariant()), QString());
         qInfo().noquote() << "Zoom in:" << Keys::text(int(QKeySequence::ZoomIn))
                           << "| Redo:" << Keys::text(int(QKeySequence::Redo));
+    }
+
+    // Past 16 million pixels the local threshold's summed table wraps around;
+    // a 600 dpi page must still come out as white paper, not black.
+    void bigBlackAndWhite() {
+        QImage white(6000, 6000, QImage::Format_Grayscale8);
+        white.fill(235);
+        const QString path = m_out.path() + QStringLiteral("/big.png");
+        QVERIFY(white.save(path));
+        Page page;
+        page.source = path;
+        page.sourceSize = white.size();
+        page.filter = Page::BlackWhite;
+        const QImage bw = PageRender::render(page, 0);
+        QCOMPARE(bw.size(), white.size());
+        qint64 ink = 0;
+        for (int y = 0; y < bw.height(); y += 7)
+            for (int x = 0; x < bw.width(); x += 7)
+                ink += bw.constScanLine(y)[x] == 0;
+        QCOMPARE(ink, 0);
+        PageRender::dropCache(path);
+    }
+
+    // A state file that cannot be read must not cost the scans it described.
+    void corruptStateKeepsPictures() {
+        {
+            PageModel model;
+            model.clear();
+            addScan(model, m_pictures.at(0));
+            addScan(model, m_pictures.at(1));
+        }
+        const QString state = PageModel::defaultDir() + QStringLiteral("/state.json");
+        QFile file(state);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write("{\"version\": 1, \"pages\": [");
+        file.close();
+
+        PageModel restarted;
+        QCOMPARE(restarted.count(), 2);
+        QCOMPARE(QDir(restarted.sessionDir()).entryList({QStringLiteral("*.png")}, QDir::Files).size(), 2);
+    }
+
+    // What the state file says is checked, not trusted.
+    void stateIsValidated() {
+        QString source;
+        {
+            PageModel model;
+            model.clear();
+            addScan(model, m_pictures.at(0));
+            Page page;
+            QVERIFY(model.pageById(model.page(0).value("pageId").toInt(), &page));
+            source = QFileInfo(page.source).fileName();
+        }
+        const QString outside = QFileInfo(PageModel::defaultDir()).absolutePath() + QStringLiteral("/outside.png");
+        QVERIFY(QFile::copy(m_pictures.at(1), outside));
+
+        const QJsonObject tampered{
+            {"source", source}, {"rotation", 45}, {"crop", QJsonArray{0.5, 0.5, 5, 5}},
+            {"filter", 9}, {"brightness", 999}, {"contrast", -999}, {"threshold", 400}, {"dpi", 1e-9},
+        };
+        const QJsonObject escaping{{"source", QStringLiteral("../outside.png")}};
+        const QJsonObject nothing{{"source", QString()}};
+        QSaveFile file(PageModel::defaultDir() + QStringLiteral("/state.json"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(QJsonDocument(QJsonObject{{"version", 1}, {"current", 7},
+                                             {"pages", QJsonArray{tampered, escaping, nothing}}}).toJson());
+        QVERIFY(file.commit());
+
+        PageModel restarted;
+        QCOMPARE(restarted.count(), 1);
+        QCOMPARE(restarted.current(), 0);
+        const QVariantMap page = restarted.page(0);
+        QCOMPARE(page.value("rotation").toInt(), 0);
+        QCOMPARE(page.value("crop").toRectF(), QRectF(0.5, 0.5, 0.5, 0.5));
+        QCOMPARE(page.value("filter").toInt(), int(Page::BlackWhite));
+        QCOMPARE(page.value("brightness").toInt(), 100);
+        QCOMPARE(page.value("contrast").toInt(), -100);
+        QCOMPARE(page.value("threshold").toInt(), 100);
+        QCOMPARE(page.value("dpi").toDouble(), 0.0);
+        QVERIFY(QFile::exists(outside));
+        QFile::remove(outside);
+    }
+
+    // A scan too big to decode is turned away with a word, not kept as a
+    // page that can never be drawn or exported.
+    void oversizedScanIsRefused() {
+        PageModel model;
+        model.clear();
+        QSignalSpy said(&model, &PageModel::message);
+        QImageReader::setAllocationLimit(1);
+        addScan(model, m_pictures.at(0));
+        QImageReader::setAllocationLimit(PageRender::kImageLimitMiB);
+        QCOMPARE(model.count(), 0);
+        QCOMPARE(said.size(), 1);
+        QCOMPARE(QDir(model.sessionDir()).entryList({QStringLiteral("*.png")}, QDir::Files), QStringList{});
     }
 
     void cleanupTestCase() {

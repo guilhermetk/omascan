@@ -36,6 +36,9 @@ QImage render(const Page &page, int maxEdge, bool withCrop = true);
 // Output size in pixels at full resolution.
 QSize outputSize(const Page &page);
 void dropCache(const QString &source);
+// The most a decoded picture may take, in MiB. Qt's default (256) cannot hold
+// a colour page at 1200 dpi; this can, up to Legal size.
+constexpr int kImageLimitMiB = 1024;
 }
 
 class PageModel : public QAbstractListModel {
@@ -70,6 +73,9 @@ public:
     };
 
     explicit PageModel(QObject *parent = nullptr);
+
+    // Where the pages of the running document are kept.
+    static QString defaultDir();
 
     int rowCount(const QModelIndex &parent = {}) const override;
     QVariant data(const QModelIndex &index, int role) const override;
