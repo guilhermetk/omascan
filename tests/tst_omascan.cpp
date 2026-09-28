@@ -14,6 +14,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include <algorithm>
 #include <memory>
 
 #include "exporter.h"
@@ -255,6 +256,128 @@ private slots:
         QCOMPARE(restarted.count(), 0);
         QCOMPARE(restarted.restoredCount(), 0);
         QCOMPARE(QDir(restarted.sessionDir()).entryList({QStringLiteral("*.png")}, QDir::Files), QStringList{});
+    }
+
+    // A page scanned while the export runs is not in the file, so the document
+    // is not finished.
+    void pageDuringExportComesBack() {
+        PageModel model;
+        model.clear();
+        addScan(model, m_pictures.at(0));
+        addScan(model, m_pictures.at(1));
+        Exporter exporter(&model);
+        exporter.exportPdf(QUrl::fromLocalFile(m_out.path() + QStringLiteral("/during.pdf")), {});
+        addScan(model, m_pictures.at(2));
+        bool ok = false;
+        QString message;
+        QVERIFY(waitForExport(exporter, &ok, &message));
+        QVERIFY2(ok, qPrintable(message));
+
+        PageModel restarted;
+        QCOMPARE(restarted.restoredCount(), 3);
+    }
+
+    // Numbered pictures never replace files the save dialog did not ask about,
+    // and the export reports a file that exists.
+    void picturesKeepEarlierExports() {
+        PageModel model;
+        model.clear();
+        addScan(model, m_pictures.at(0));
+        addScan(model, m_pictures.at(1));
+        Exporter exporter(&model);
+        const QString dir = m_out.path() + QStringLiteral("/pictures");
+        QVERIFY(QDir().mkpath(dir));
+        QStringList written;
+        for (int run = 0; run < 2; ++run) {
+            QSignalSpy spy(&exporter, &Exporter::finished);
+            exporter.exportImages(QUrl::fromLocalFile(dir + QStringLiteral("/scan.png")), {});
+            QVERIFY(spy.wait(120000));
+            QVERIFY2(spy.first().at(0).toBool(), qPrintable(spy.first().at(1).toString()));
+            written << spy.first().at(2).toUrl().toLocalFile();
+        }
+        QCOMPARE(written, (QStringList{dir + QStringLiteral("/scan-01.png"), dir + QStringLiteral("/scan (2)-01.png")}));
+        QCOMPARE(QDir(dir).entryList(QDir::Files).size(), 4);
+    }
+
+    // A page that cannot be encoded fails the export, and the document is
+    // not taken for finished.
+    void unencodablePageFailsExport() {
+        QImage tall(2, 66000, QImage::Format_Grayscale8); // past libjpeg's 65,500
+        for (int y = 0; y < tall.height(); ++y)
+            std::fill_n(tall.scanLine(y), tall.width(), uchar(40 + y % 160));
+        const QString path = m_out.path() + QStringLiteral("/tall.png");
+        QVERIFY(tall.save(path));
+        PageModel model;
+        model.clear();
+        addScan(model, path);
+        QCOMPARE(model.count(), 1);
+        model.setFilter(0, Page::Original);
+        Exporter exporter(&model);
+        exporter.exportPdf(QUrl::fromLocalFile(m_out.path() + QStringLiteral("/tall.pdf")), {{"quality", "best"}});
+        bool ok = true;
+        QString message;
+        QVERIFY(waitForExport(exporter, &ok, &message));
+        QVERIFY(!ok);
+        QVERIFY(!QFile::exists(m_out.path() + QStringLiteral("/tall.pdf")));
+
+        PageModel restarted;
+        QCOMPARE(restarted.restoredCount(), 1);
+        restarted.clear();
+    }
+
+    // Undo after Reset brings the adjustments back.
+    void undoReset() {
+        PageModel model;
+        model.clear();
+        addScan(model, m_pictures.at(0));
+        model.checkpoint(QStringLiteral("Adjust brightness"));
+        model.setAdjustment(0, QStringLiteral("brightness"), 40);
+        model.resetAdjustments(0);
+        QCOMPARE(model.page(0).value("brightness").toInt(), 0);
+        model.undo();
+        QCOMPARE(model.page(0).value("brightness").toInt(), 40);
+        model.redo();
+        QCOMPARE(model.page(0).value("brightness").toInt(), 0);
+    }
+
+    // A state that parses but is not one save() writes is as good as none.
+    void malformedStateKeepsPictures() {
+        {
+            PageModel model;
+            model.clear();
+            addScan(model, m_pictures.at(0));
+            addScan(model, m_pictures.at(1));
+        }
+        for (const char *json : {"{}", "{\"version\": 1, \"pages\": {}}", "{\"version\": 1, \"pages\": [], \"exported\": 1}"}) {
+            QSaveFile file(PageModel::defaultDir() + QStringLiteral("/state.json"));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(json);
+            QVERIFY(file.commit());
+            PageModel restarted;
+            QVERIFY2(restarted.count() == 2, json);
+        }
+    }
+
+    // A state that cannot be saved is said once, and not left behind to
+    // speak for a document it no longer describes.
+    void failedSaveIsSaid() {
+        PageModel model;
+        model.clear();
+        addScan(model, m_pictures.at(0));
+        QSignalSpy said(&model, &PageModel::message);
+        const QString dir = model.sessionDir();
+        QFile::setPermissions(dir, QFile::ReadOwner | QFile::ExeOwner);
+        if (QFileInfo(dir).isWritable()) {
+            QFile::setPermissions(dir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+            QSKIP("The session folder cannot be made read-only here");
+        }
+        model.rotate(0, 90);
+        model.rotate(0, 90);
+        QFile::setPermissions(dir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        QCOMPARE(said.size(), 1);
+        model.rotate(0, 180);
+        PageModel restarted;
+        QCOMPARE(restarted.page(0).value("rotation").toInt(), 0);
     }
 
     // Menu shortcut labels: strings and standard keys alike read as key caps.

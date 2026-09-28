@@ -14,16 +14,19 @@ Rectangle {
     Rectangle { width: Theme.hairline; height: parent.height; color: Theme.border }
 
     // Sliders commit on a short timer so a drag doesn't queue a render per pixel.
+    // The page is held by id: a scan arriving meanwhile becomes the current one.
     Timer {
         id: adjustTimer
         interval: 60
+        property int pageId
         property string name
         property int value
-        onTriggered: Pages.setAdjustment(Pages.current, name, value)
+        onTriggered: Pages.setAdjustment(Pages.indexOf(pageId), name, value)
     }
     function adjust(name, value) {
-        if (adjustTimer.running && adjustTimer.name !== name)
-            Pages.setAdjustment(Pages.current, adjustTimer.name, adjustTimer.value)
+        if (adjustTimer.running && (adjustTimer.name !== name || adjustTimer.pageId !== page.pageId))
+            Pages.setAdjustment(Pages.indexOf(adjustTimer.pageId), adjustTimer.name, adjustTimer.value)
+        adjustTimer.pageId = page.pageId
         adjustTimer.name = name
         adjustTimer.value = value
         adjustTimer.restart()

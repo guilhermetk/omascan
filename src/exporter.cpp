@@ -103,8 +103,32 @@ QByteArray jpeg(const QImage &image, int quality) {
     QImageWriter writer(&buffer, "jpeg");
     writer.setQuality(quality);
     writer.setOptimizedWrite(true);
-    writer.write(image);
-    return bytes;
+    // Empty when it cannot be encoded: past 65,500 pixels, for one.
+    return writer.write(image) ? bytes : QByteArray();
+}
+
+// The files a picture export writes: the chosen name for one page, numbered
+// from it for several. The save dialog only confirmed the chosen name, so any
+// other name already taken moves the whole set on to "name (2)" and so on.
+QStringList pictureNames(const QString &path, int count, const QString &extension) {
+    const QFileInfo chosen(path);
+    const int digits = count >= 100 ? 3 : 2;
+    const auto namesFor = [&](const QString &stem) {
+        QStringList names;
+        if (count == 1)
+            names << chosen.absolutePath() + u'/' + stem + u'.' + extension;
+        for (int i = 0; count > 1 && i < count; ++i)
+            names << QStringLiteral("%1/%2-%3.%4").arg(chosen.absolutePath(), stem)
+                         .arg(i + 1, digits, 10, QLatin1Char('0')).arg(extension);
+        return names;
+    };
+    const auto taken = [&](const QString &name) {
+        return name != chosen.absoluteFilePath() && QFileInfo::exists(name);
+    };
+    QStringList names = namesFor(chosen.completeBaseName());
+    for (int n = 2; std::any_of(names.cbegin(), names.cend(), taken); ++n)
+        names = namesFor(QStringLiteral("%1 (%2)").arg(chosen.completeBaseName()).arg(n));
+    return names;
 }
 
 // zlib stream for /FlateDecode. qCompress prefixes a 4-byte length; PDF does not.
@@ -226,8 +250,14 @@ QString Exporter::defaultOcrLanguage() const {
 QString Exporter::suggestedName(const QString &extension) const {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     const QString stem = QStringLiteral("Scan %1").arg(QDate::currentDate().toString(Qt::ISODate));
+    // Several pictures are numbered from the name, so those count as taken too.
+    const auto taken = [&](const QString &name) {
+        const QString numbered = dir + u'/' + QFileInfo(name).completeBaseName() + u'-';
+        return QFileInfo::exists(dir + u'/' + name) || QFileInfo::exists(numbered + u"01." + extension)
+            || QFileInfo::exists(numbered + u"001." + extension);
+    };
     QString name = stem + u'.' + extension;
-    for (int n = 2; QFileInfo::exists(dir + u'/' + name); ++n)
+    for (int n = 2; taken(name); ++n)
         name = QStringLiteral("%1 (%2).%3").arg(stem).arg(n).arg(extension);
     return name;
 }
@@ -261,14 +291,17 @@ void Exporter::run(std::function<QString()> job, const QUrl &file, bool wholeDoc
     emit busyChanged();
     report(0, tr("Preparing…"));
 
-    m_thread = QThread::create([this, job, file, wholeDocument] {
+    // Pages can still arrive, or change, while this runs: the document only
+    // counts as exported if it is still what was written.
+    const quint64 changes = m_model->changes();
+    m_thread = QThread::create([this, job, file, wholeDocument, changes] {
         const QString error = job();
-        QMetaObject::invokeMethod(this, [this, error, file, wholeDocument] {
+        QMetaObject::invokeMethod(this, [this, error, file, wholeDocument, changes] {
             m_busy = false;
             emit busyChanged();
             const bool cancelled = m_cancel.load();
             if (error.isEmpty() && !cancelled && wholeDocument)
-                m_model->markExported();
+                m_model->markExported(changes);
             emit finished(error.isEmpty() && !cancelled,
                           cancelled ? tr("Export cancelled") : error, file);
         }, Qt::QueuedConnection);
@@ -292,8 +325,12 @@ void Exporter::exportImages(const QUrl &file, const QVariantMap &options) {
     const QString path = file.toLocalFile();
     if (pages.isEmpty() || path.isEmpty())
         return;
-    run([this, pages, path, options] { return writeImages(pages, path, options); }, file,
-        pages.size() == m_model->count());
+    const bool png = options.value(QStringLiteral("format")).toString() != u"jpeg";
+    const QStringList names = pictureNames(path, int(pages.size()),
+                                           png ? QStringLiteral("png") : QStringLiteral("jpg"));
+    // Open and Show in folder go to the first picture written.
+    run([this, pages, names, options] { return writeImages(pages, names, options); },
+        QUrl::fromLocalFile(names.first()), pages.size() == m_model->count());
 }
 
 QString Exporter::writePdf(const QList<Page> &pages, const QString &path, const QVariantMap &options) {
@@ -329,6 +366,10 @@ QString Exporter::writePdf(const QList<Page> &pages, const QString &path, const 
             dict = "/ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /FlateDecode";
         } else {
             image = jpeg(p.image, quality.jpeg);
+            if (image.isEmpty()) {
+                file.cancelWriting();
+                return tr("Page %1 could not be written").arg(i + 1);
+            }
             dict = QByteArray("/ColorSpace ")
                  + (p.image.format() == QImage::Format_Grayscale8 ? "/DeviceGray" : "/DeviceRGB")
                  + " /BitsPerComponent 8 /Filter /DCTDecode";
@@ -468,11 +509,8 @@ QString Exporter::writeOcrPdf(const QList<Page> &pages, const QString &path, con
     return {};
 }
 
-QString Exporter::writeImages(const QList<Page> &pages, const QString &path, const QVariantMap &options) {
+QString Exporter::writeImages(const QList<Page> &pages, const QStringList &names, const QVariantMap &options) {
     const bool png = options.value(QStringLiteral("format")).toString() != u"jpeg";
-    const QFileInfo info(path);
-    const QString extension = png ? QStringLiteral("png") : QStringLiteral("jpg");
-    const int digits = pages.size() >= 100 ? 3 : 2;
 
     for (int i = 0; i < pages.size(); ++i) {
         if (m_cancel)
@@ -486,11 +524,7 @@ QString Exporter::writeImages(const QList<Page> &pages, const QString &path, con
             image.setDotsPerMeterX(dpm);
             image.setDotsPerMeterY(dpm);
         }
-        // One page keeps the chosen name; several are numbered from it.
-        const QString name = pages.size() == 1
-            ? info.absolutePath() + u'/' + info.completeBaseName() + u'.' + extension
-            : QStringLiteral("%1/%2-%3.%4").arg(info.absolutePath(), info.completeBaseName())
-                  .arg(i + 1, digits, 10, QLatin1Char('0')).arg(extension);
+        const QString &name = names.at(i);
         QSaveFile file(name);
         if (!file.open(QIODevice::WriteOnly))
             return tr("Could not write %1").arg(QFileInfo(name).fileName());

@@ -334,6 +334,16 @@ bool fitsInMemory(QSize size) {
     return limit <= 0 || qint64(size.width()) * size.height() * 4 <= qint64(limit) * 1024 * 1024;
 }
 
+// Whether a state file has the shape save() writes. One that does not is
+// treated like one that cannot be read at all: its time says nothing.
+bool isState(const QJsonObject &state) {
+    const QJsonValue exported = state.value("exported");
+    const QJsonValue current = state.value("current");
+    return state.value("version").toInt() == 1 && state.value("pages").isArray()
+        && (exported.isUndefined() || exported.isBool())
+        && (current.isUndefined() || current.isDouble());
+}
+
 QJsonObject toJson(const Page &p) {
     return {
         {"id", p.id}, {"source", QFileInfo(p.source).fileName()}, {"rotation", p.rotation},
@@ -422,6 +432,13 @@ QString PageModel::newSourcePath(const QString &suffix) const {
            + u'.' + suffix;
 }
 
+int PageModel::indexOf(int id) const {
+    for (int i = 0; i < m_pages.size(); ++i)
+        if (m_pages.at(i).id == id)
+            return i;
+    return -1;
+}
+
 QVariantMap PageModel::page(int index) const {
     QVariantMap map;
     if (!valid(index))
@@ -436,6 +453,7 @@ void PageModel::append(Page page) {
     page.id = nextId();
     page.filter = m_defaultFilter;
     const int row = int(m_pages.size());
+    ++m_changes;
     beginInsertRows({}, row, row);
     m_pages.append(page);
     endInsertRows();
@@ -485,6 +503,7 @@ void PageModel::addScan(const QString &path, qreal dpi) {
 void PageModel::touch(int index) {
     Page &p = m_pages[index];
     ++p.revision;
+    ++m_changes;
     syncMirror();
     emit dataChanged(this->index(index), this->index(index));
     save();
@@ -595,10 +614,13 @@ void PageModel::setAdjustment(int index, const QString &name, int value) {
 void PageModel::resetAdjustments(int index) {
     if (!valid(index))
         return;
-    Page &p = m_pages[index];
-    if (p.brightness == 0 && p.contrast == 0 && p.threshold == 50)
+    const Page &now = m_pages.at(index);
+    if (now.brightness == 0 && now.contrast == 0 && now.threshold == 50)
         return;
+    // The checkpoint shares the list; only a reference taken after it writes
+    // to a copy of its own, not into the undo step.
     checkpoint(tr("Reset adjustments"));
+    Page &p = m_pages[index];
     p.brightness = 0;
     p.contrast = 0;
     p.threshold = 50;
@@ -627,6 +649,7 @@ void PageModel::applyLookToAll(int index) {
 
 void PageModel::clear() {
     m_exported = false;
+    ++m_changes;
     beginResetModel();
     m_pages.clear();
     endResetModel();
@@ -641,13 +664,16 @@ void PageModel::clear() {
     collectGarbage();
 }
 
-void PageModel::markExported() {
+void PageModel::markExported(quint64 changes) {
+    if (changes != m_changes)
+        return;
     m_exported = true;
     save();
 }
 
 void PageModel::checkpoint(const QString &label) {
     m_exported = false;
+    ++m_changes;
     m_undo.append({m_pages, m_current, label});
     if (m_undo.size() > kUndoDepth)
         m_undo.removeFirst();
@@ -658,6 +684,7 @@ void PageModel::checkpoint(const QString &label) {
 void PageModel::resetTo(const QList<Page> &pages, int current) {
     beginResetModel();
     m_pages = pages;
+    ++m_changes;
     // Every restored page gets a new revision so its Image reloads.
     for (Page &p : m_pages)
         p.revision = ++m_lastId;
@@ -702,18 +729,26 @@ void PageModel::syncMirror() {
                 m_mirror.insert(p.id, p);
 }
 
-void PageModel::save() const {
+void PageModel::save() {
     QJsonArray pages;
     for (const Page &p : m_pages)
         pages.append(toJson(p));
     const QJsonObject state{{"version", 1}, {"current", m_current}, {"exported", m_exported},
                             {"pages", pages}};
 
-    QSaveFile file(m_dir + QStringLiteral("/state.json"));
-    if (file.open(QIODevice::WriteOnly)) {
-        file.write(QJsonDocument(state).toJson(QJsonDocument::Compact));
-        file.commit();
+    const QString path = m_dir + QStringLiteral("/state.json");
+    const QByteArray bytes = QJsonDocument(state).toJson(QJsonDocument::Compact);
+    QSaveFile file(path);
+    if (file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size() && file.commit()) {
+        m_saveFailed = false;
+        return;
     }
+    // The state left on disk describes an older document, and may call it
+    // exported. With none at all, the next run keeps every picture instead.
+    QFile::remove(path);
+    if (!m_saveFailed)
+        emit message(tr("Your changes could not be saved. Is the disk full?"));
+    m_saveFailed = true;
 }
 
 void PageModel::restore() {
@@ -725,9 +760,9 @@ void PageModel::restore() {
     if (file.open(QIODevice::ReadOnly)) {
         QJsonParseError error;
         const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &error);
-        if (error.error == QJsonParseError::NoError && document.isObject()) {
+        const QJsonObject state = document.object();
+        if (error.error == QJsonParseError::NoError && document.isObject() && isState(state)) {
             savedAt = QFileInfo(file).lastModified();
-            const QJsonObject state = document.object();
             // An exported document is finished: start the new run empty, and
             // let collectGarbage() below remove its pictures.
             const QJsonArray saved = state.value("exported").toBool() ? QJsonArray() : state.value("pages").toArray();
@@ -787,6 +822,8 @@ void PageModel::restore() {
     syncMirror();
     if (!m_pages.isEmpty() || savedAt.isValid())
         save();
+    // Nothing is listening yet: a failure here is said at the next one.
+    m_saveFailed = false;
     collectGarbage();
 }
 

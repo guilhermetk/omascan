@@ -57,7 +57,7 @@ private:
     // Each returns an error message, or empty on success.
     QString writePdf(const QList<Page> &pages, const QString &path, const QVariantMap &options);
     QString writeOcrPdf(const QList<Page> &pages, const QString &path, const QVariantMap &options);
-    QString writeImages(const QList<Page> &pages, const QString &path, const QVariantMap &options);
+    QString writeImages(const QList<Page> &pages, const QStringList &names, const QVariantMap &options);
 
     PageModel *m_model;
     QString m_tesseract;

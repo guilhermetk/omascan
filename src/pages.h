@@ -100,13 +100,19 @@ public:
     QString newSourcePath(const QString &suffix) const;
 
     Q_INVOKABLE QVariantMap page(int index) const;
+    // Where the page with this id is now, or -1 once it is gone.
+    Q_INVOKABLE int indexOf(int id) const;
 
     // Adds a scanned picture as the last page; the file moves into the session.
     Q_INVOKABLE void addScan(const QString &path, qreal dpi);
 
-    // The whole document has been written out. Until something changes, the
-    // next run starts empty instead of bringing these pages back.
-    void markExported();
+    // Counts every change to the pages, so an export can tell whether what it
+    // wrote is still the whole document.
+    quint64 changes() const { return m_changes; }
+    // The whole document, as it stood at `changes`, has been written out.
+    // Unless it has changed since, and until it does, the next run starts
+    // empty instead of bringing these pages back.
+    void markExported(quint64 changes);
 
     Q_INVOKABLE void remove(int index);
     Q_INVOKABLE void move(int from, int to);
@@ -143,7 +149,7 @@ private:
     void touch(int index);
     void resetTo(const QList<Page> &pages, int current);
     void syncMirror();
-    void save() const;
+    void save();
     void restore();
     void collectGarbage() const;
 
@@ -154,6 +160,8 @@ private:
     int m_defaultFilter = Page::Enhanced;
     int m_restoredCount = 0;
     bool m_exported = false;
+    bool m_saveFailed = false;
+    quint64 m_changes = 0;
     QList<Snapshot> m_undo;
     QList<Snapshot> m_redo;
 
