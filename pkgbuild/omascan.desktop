@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OmaScan
+GenericName=Document Scanner
+Comment=Scan documents to PDF
+Exec=omascan
+Icon=omascan
+Terminal=false
+Categories=Graphics;Scanning;Office;
+Keywords=scan;scanner;document;pdf;ocr;sane;paper;receipt;
+StartupWMClass=omascan

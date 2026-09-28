@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# A stand-in for SANE's scanimage, for trying OmaScan without a scanner:
+#
+#   OMASCAN_SCANIMAGE=bin/fake-scanimage build/omascan
+#
+# It offers a flatbed and a feeder, answers -f and -A like scanimage does, and
+# "scans" by drawing a page of text with ImageMagick, reporting progress on the
+# way. FAKE_SCAN_FAIL=busy|jam makes the next scan fail; FAKE_SCAN_PAGES sets
+# how many pages the feeder holds (default 3).
+set -eu
+
+device="" format="" output="" batch="" mode="Color" resolution=150 source="Flatbed"
+width_mm=215.9 height_mm=297 list="" all=0 progress=0 batch_print=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -f) list="$2"; shift ;;
+    -d) device="$2"; shift ;;
+    -A) all=1 ;;
+    -p) progress=1 ;;
+    -o) output="$2"; shift ;;
+    --format=*) format="${1#*=}" ;;
+    --batch=*) batch="${1#*=}" ;;
+    --batch-print) batch_print=1 ;;
+    --mode) mode="$2"; shift ;;
+    --source) source="$2"; shift ;;
+    --resolution) resolution="$2"; shift ;;
+    -x) width_mm="$2"; shift ;;
+    -y) height_mm="$2"; shift ;;
+    -l|-t) shift ;;
+  esac
+  shift
+done
+
+if [ -n "$list" ]; then
+  sleep 0.6 # discovery is never instant
+  for d in "fake:flatbed	Oma	Flatbed 3000	flatbed scanner" "fake:adf	Oma	Feeder 9000	ADF scanner"; do
+    IFS='	' read -r id vendor model kind <<<"$d"
+    out="${list//%d/$id}"; out="${out//%v/$vendor}"; out="${out//%m/$model}"; out="${out//%t/$kind}"
+    printf '%b' "${out//%n/\\n}"
+  done
+  exit 0
+fi
+
+if [ "$all" = 1 ]; then
+  sleep 0.3
+  echo
+  echo "All options specific to device \`$device':"
+  echo "  Scan mode:"
+  echo "    --mode Color|Gray|Lineart [Color]"
+  echo "        Selects the scan mode."
+  if [ "$device" = "fake:adf" ]; then
+    echo "    --resolution 75|150|200|300|600dpi [150]"
+    echo "    --source Flatbed|ADF|ADF Duplex [ADF]"
+  else
+    echo "    --resolution 50..1200dpi (in steps of 1) [150]"
+    echo "    --source Flatbed [Flatbed]"
+  fi
+  echo "  Geometry:"
+  echo "    -l 0..215.9mm [0]"
+  echo "    -t 0..297.18mm [0]"
+  echo "    -x 0..215.9mm [215.9]"
+  echo "    -y 0..297.18mm [297.18]"
+  exit 0
+fi
+
+case "${FAKE_SCAN_FAIL:-}" in
+  busy) sleep 0.5; echo "scanimage: open of device $device failed: Device busy" >&2; exit 1 ;;
+  jam) sleep 1; echo "scanimage: sane_start: Document feeder jammed" >&2; exit 1 ;;
+esac
+
+# Real font files: ImageMagick's own font names vary from machine to machine.
+bold_font=$(fc-match -f '%{file}' 'sans:bold')
+body_font=$(fc-match -f '%{file}' 'serif')
+
+scan_page() { # $1 = output file, $2 = page number
+  local w h colour
+  w=$(awk "BEGIN{printf \"%d\", $width_mm/25.4*$resolution}")
+  h=$(awk "BEGIN{printf \"%d\", $height_mm/25.4*$resolution}")
+  for pct in 5 15 30 45 60 75 90 100; do
+    [ "$progress" = 1 ] && printf 'Progress: %s.0%%\r' "$pct" >&2
+    sleep 0.15
+  done
+  local s=$(awk "BEGIN{print $resolution/150}")
+  local body="Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod
+tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam,
+quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo
+consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse
+cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non
+proident, sunt in culpa qui officia deserunt mollit anim id est laborum."
+  colour="#1f3a93"; [ "$mode" != "Color" ] && colour="#222222"
+  magick -size "${w}x${h}" xc:'#e4e0d6' \
+    -fill '#d8d3c6' -draw "rectangle 0,$((h*93/100)) $w,$h" \
+    -fill "$colour" -font "$bold_font" -pointsize "$(awk "BEGIN{print 22*$s}")" \
+    -annotate "+$((w/10))+$((h/9))" "Invoice No. 2026-0$2" \
+    -fill '#2a2a2a' -font "$body_font" -pointsize "$(awk "BEGIN{print 12*$s}")" \
+    -annotate "+$((w/10))+$((h/6))" "Oma Supplies Ltd · 12 Arch Street · Page $2" \
+    -annotate "+$((w/10))+$((h/4))" "$body" \
+    -annotate "+$((w/10))+$((h*45/100))" "$body" \
+    -fill none -stroke '#444' -strokewidth "$(awk "BEGIN{print $s}")" \
+    -draw "rectangle $((w/10)),$((h*62/100)) $((w*9/10)),$((h*78/100))" \
+    -stroke none -fill '#2a2a2a' -pointsize "$(awk "BEGIN{print 12*$s}")" \
+    -annotate "+$((w*12/100))+$((h*66/100))" "Item                                   Qty        Amount" \
+    -annotate "+$((w*12/100))+$((h*70/100))" "Paper, recycled A4                       5        €24.50" \
+    -annotate "+$((w*12/100))+$((h*74/100))" "Toner cartridge                          1        €61.00" \
+    -rotate 0.6 -gravity center -extent "${w}x${h}" \
+    $( [ "$mode" = "Gray" ] && echo "-colorspace Gray" ) \
+    $( [ "$mode" = "Lineart" ] && echo "-colorspace Gray -threshold 60%" ) \
+    -attenuate 0.25 +noise Gaussian \
+    -units PixelsPerInch -density "$resolution" \
+    "png:$1.part"
+  mv "$1.part" "$1"
+}
+
+if [ -n "$batch" ]; then
+  pages="${FAKE_SCAN_PAGES:-3}"
+  for n in $(seq 1 "$pages"); do
+    file="${batch//%d/$n}"
+    scan_page "$file" "$n"
+    echo "Scanned page $n. (scanner status = 5)" >&2
+    [ "$batch_print" = 1 ] && echo "$file"
+  done
+  echo "scanimage: sane_start: Document feeder out of documents" >&2
+  echo "Batch terminated, $pages pages scanned" >&2
+  exit 0
+fi
+
+page=$(( $(date +%s) % 9 + 1 ))
+if [ -n "$output" ]; then
+  scan_page "$output" "$page"
+else
+  tmp=$(mktemp); scan_page "$tmp" "$page"; cat "$tmp"; rm -f "$tmp"
+fi

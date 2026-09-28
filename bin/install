@@ -1,0 +1,30 @@
+#!/usr/bin/env sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+if ! command -v makepkg >/dev/null 2>&1; then
+  echo "OmaScan is built with makepkg. Install the build tools first:" >&2
+  echo "  sudo pacman -S --needed base-devel" >&2
+  exit 1
+fi
+
+# makepkg installs what OmaScan needs (Qt, SANE) before building it.
+cd "$ROOT/pkgbuild"
+makepkg -fsi "$@"
+
+# SANE finds USB scanners on its own. Most network scanners and printers speak
+# eSCL/WSD, which needs the airscan backend; offer it if it's missing.
+if ! pacman -Q sane-airscan >/dev/null 2>&1 && [ -t 0 ]; then
+  printf "Add support for network scanners (sane-airscan)? [Y/n] "
+  read -r answer || answer=""
+  case "$answer" in [nN]*) ;; *) sudo pacman -S --needed --asdeps sane-airscan ;; esac
+fi
+if ! command -v tesseract >/dev/null 2>&1 && [ -t 0 ]; then
+  printf "Add text recognition, for searchable PDFs (tesseract)? [Y/n] "
+  read -r answer || answer=""
+  case "$answer" in [nN]*) ;; *) sudo pacman -S --needed --asdeps tesseract tesseract-data-eng ;; esac
+fi
+
+echo
+echo "OmaScan is installed. Open it with Super + Space, then type OmaScan."

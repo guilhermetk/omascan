@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Build and run the model and export tests (no window, no scanner needed).
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+mkdir -p "$ROOT/build/tests"
+cd "$ROOT/build/tests"
+qmake6 "$ROOT/tests/tests.pro" >/dev/null
+make -j"$(nproc 2>/dev/null || echo 1)" >/dev/null
+QT_QPA_PLATFORM=offscreen ./omascan-tests "$@"

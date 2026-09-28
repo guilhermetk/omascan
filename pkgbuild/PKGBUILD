@@ -1,0 +1,29 @@
+pkgname=omascan
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Keyboard-first document scanner for Omarchy'
+arch=('x86_64' 'aarch64')
+url='https://github.com/guilhermet/omascan'
+license=('unknown')
+options=('!debug')
+depends=('hicolor-icon-theme' 'qt6-base' 'qt6-declarative' 'qt6-svg' 'sane' 'xdg-desktop-portal')
+optdepends=('sane-airscan: network and driverless scanners (most printers made since 2015)'
+            'tesseract: searchable text in exported PDFs'
+            'tesseract-data-eng: English text recognition')
+makedepends=('gcc' 'make')
+source=()
+sha256sums=()
+
+# Builds the working tree; ./bin/install runs this.
+build() {
+  cd "$startdir/.."
+  ./bin/build
+}
+
+package() {
+  cd "$startdir/.."
+  install -Dm755 build/omascan "$pkgdir/usr/bin/omascan"
+  install -Dm644 src/ui/icons/LICENSE.lucide "$pkgdir/usr/share/licenses/$pkgname/LICENSE.lucide"
+  install -Dm644 "$startdir/omascan.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/omascan.svg"
+  install -Dm644 "$startdir/omascan.desktop" "$pkgdir/usr/share/applications/omascan.desktop"
+}

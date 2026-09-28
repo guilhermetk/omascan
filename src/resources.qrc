@@ -1,0 +1,48 @@
+<RCC>
+    <qresource prefix="/">
+        <file>qml/Card.qml</file>
+        <file>qml/CropOverlay.qml</file>
+        <file>qml/ExportDialog.qml</file>
+        <file>qml/FieldRow.qml</file>
+        <file>qml/Inspector.qml</file>
+        <file>qml/KeyCap.qml</file>
+        <file>qml/Main.qml</file>
+        <file>qml/PageImage.qml</file>
+        <file>qml/PageList.qml</file>
+        <file>qml/PageView.qml</file>
+        <file>qml/SectionLabel.qml</file>
+        <file>qml/Segmented.qml</file>
+        <file>qml/ShortcutsDialog.qml</file>
+        <file>qml/Theme.qml</file>
+        <file>qml/Toast.qml</file>
+        <file>ui/Icon.qml</file>
+        <file>ui/icons/Icons.qml</file>
+    </qresource>
+    <!-- The control style, where Qt looks for styles: qrc:/qt/qml/<name>. -->
+    <qresource prefix="/qt/qml/OmaScanStyle">
+        <file alias="ApplicationWindow.qml">style/OmaScanStyle/ApplicationWindow.qml</file>
+        <file alias="Button.qml">style/OmaScanStyle/Button.qml</file>
+        <file alias="CheckBox.qml">style/OmaScanStyle/CheckBox.qml</file>
+        <file alias="ComboBox.qml">style/OmaScanStyle/ComboBox.qml</file>
+        <file alias="DialogButtonBox.qml">style/OmaScanStyle/DialogButtonBox.qml</file>
+        <file alias="Dialog.qml">style/OmaScanStyle/Dialog.qml</file>
+        <file alias="ItemDelegate.qml">style/OmaScanStyle/ItemDelegate.qml</file>
+        <file alias="Label.qml">style/OmaScanStyle/Label.qml</file>
+        <file alias="MenuBarItem.qml">style/OmaScanStyle/MenuBarItem.qml</file>
+        <file alias="MenuBar.qml">style/OmaScanStyle/MenuBar.qml</file>
+        <file alias="MenuItem.qml">style/OmaScanStyle/MenuItem.qml</file>
+        <file alias="Menu.qml">style/OmaScanStyle/Menu.qml</file>
+        <file alias="MenuSeparator.qml">style/OmaScanStyle/MenuSeparator.qml</file>
+        <file alias="Popup.qml">style/OmaScanStyle/Popup.qml</file>
+        <file alias="ProgressBar.qml">style/OmaScanStyle/ProgressBar.qml</file>
+        <file alias="qmldir">style/OmaScanStyle/qmldir</file>
+        <file alias="ScrollBar.qml">style/OmaScanStyle/ScrollBar.qml</file>
+        <file alias="ScrollView.qml">style/OmaScanStyle/ScrollView.qml</file>
+        <file alias="Slider.qml">style/OmaScanStyle/Slider.qml</file>
+        <file alias="Switch.qml">style/OmaScanStyle/Switch.qml</file>
+        <file alias="TextField.qml">style/OmaScanStyle/TextField.qml</file>
+        <file alias="ToolButton.qml">style/OmaScanStyle/ToolButton.qml</file>
+        <file alias="ToolSeparator.qml">style/OmaScanStyle/ToolSeparator.qml</file>
+        <file alias="ToolTip.qml">style/OmaScanStyle/ToolTip.qml</file>
+    </qresource>
+</RCC>
