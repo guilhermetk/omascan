@@ -14,7 +14,7 @@ OmaScan is made for Omarchy.
 2. Copy and paste these three lines, then press Enter:
 
    ```sh
-   git clone https://github.com/guilhermet/omascan.git ~/omascan
+   git clone https://github.com/guilhermetk/omascan.git ~/omascan
    cd ~/omascan
    ./bin/install
    ```
