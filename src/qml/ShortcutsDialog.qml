@@ -35,6 +35,7 @@ Dialog {
             [["Ctrl", "+"], qsTr("Zoom in")],
             [["Ctrl", "−"], qsTr("Zoom out")],
             [["Ctrl", "0"], qsTr("Fit page")],
+            [["Ctrl", "Scroll"], qsTr("Zoom at the pointer")],
             [["?"], qsTr("This list")] ] }
     ]
 

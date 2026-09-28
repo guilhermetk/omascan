@@ -137,7 +137,7 @@ Every page has a **look**:
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
 | `Ctrl++` or `Ctrl+=` / `Ctrl+-` | Zoom in / out |
 | `Ctrl+0` | Fit the page |
-| `Ctrl`+wheel | Zoom |
+| `Ctrl`+scroll | Zoom in / out at the pointer |
 
 ## Your files
 

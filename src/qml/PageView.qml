@@ -24,17 +24,43 @@ Rectangle {
     readonly property real barRoom: cropping ? Theme.hHeroButton + Theme.s4 : 0
     readonly property real fitScale: Math.min((width - 2 * Theme.pagePadding) / pageW,
                                               (height - 2 * Theme.pagePadding - barRoom) / pageH)
-    readonly property real scale: Math.max(0.01, fitScale * zoomFactor)
-    readonly property int zoomPercent: Math.round(scale * 100)
+    readonly property real pageScale: Math.max(0.01, fitScale * zoomFactor)
+    readonly property int zoomPercent: Math.round(pageScale * 100)
 
-    function zoomIn() {
-        for (const s of zoomSteps) if (s > zoomFactor + 0.01) { zoomFactor = s; return }
+    // Where the paper sits in the flickable's content at a given zoom. The
+    // same arithmetic as the bindings below, so a zoom can be worked out
+    // before it happens.
+    function layoutAt(factor) {
+        const s = Math.max(0.01, fitScale * factor)
+        const w = Math.round(pageW * s), h = Math.round(pageH * s)
+        const cw = Math.max(flick.width, pageW * s + 2 * Theme.pagePadding)
+        const ch = Math.max(flick.height, pageH * s + 2 * Theme.pagePadding)
+        return { x: Math.round((cw - w) / 2), y: Math.round((ch - barRoom - h) / 2), w: w, h: h, cw: cw, ch: ch }
     }
-    function zoomOut() {
+
+    // Zoom so that the spot under `anchor` (a point in this view) stays put:
+    // the pointer for the wheel, the middle of the view for keys and buttons.
+    function zoomTo(factor, anchor) {
+        factor = Math.max(zoomSteps[0], Math.min(zoomSteps[zoomSteps.length - 1], factor))
+        if (Math.abs(factor - zoomFactor) < 0.001)
+            return
+        const at = anchor ?? Qt.point(flick.width / 2, flick.height / 2)
+        const before = layoutAt(zoomFactor)
+        const u = (flick.contentX + at.x - before.x) / before.w
+        const v = (flick.contentY + at.y - before.y) / before.h
+        const after = layoutAt(factor)
+        zoomFactor = factor
+        flick.contentX = Math.max(0, Math.min(after.cw - flick.width, after.x + u * after.w - at.x))
+        flick.contentY = Math.max(0, Math.min(after.ch - flick.height, after.y + v * after.h - at.y))
+    }
+    function zoomIn(anchor) {
+        for (const s of zoomSteps) if (s > zoomFactor + 0.01) { zoomTo(s, anchor); return }
+    }
+    function zoomOut(anchor) {
         for (let i = zoomSteps.length - 1; i >= 0; --i)
-            if (zoomSteps[i] < zoomFactor - 0.01) { zoomFactor = zoomSteps[i]; return }
+            if (zoomSteps[i] < zoomFactor - 0.01) { zoomTo(zoomSteps[i], anchor); return }
     }
-    function zoomFit() { zoomFactor = 1 }
+    function zoomFit() { zoomTo(1) }
 
     function beginCrop() {
         if (!hasPage) return
@@ -60,14 +86,15 @@ Rectangle {
         anchors.fill: parent
         visible: view.hasPage
         clip: true
-        contentWidth: Math.max(width, view.pageW * view.scale + 2 * Theme.pagePadding)
-        contentHeight: Math.max(height, view.pageH * view.scale + 2 * Theme.pagePadding)
+        contentWidth: Math.max(width, view.pageW * view.pageScale + 2 * Theme.pagePadding)
+        contentHeight: Math.max(height, view.pageH * view.pageScale + 2 * Theme.pagePadding)
         interactive: view.zoomFactor > 1 && !view.cropping
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollBar {}
         ScrollBar.horizontal: ScrollBar {}
 
         Item {
+            id: sheet
             width: flick.contentWidth
             height: flick.contentHeight
 
@@ -88,8 +115,8 @@ Rectangle {
 
             Rectangle {
                 id: paper
-                width: Math.round(view.pageW * view.scale)
-                height: Math.round(view.pageH * view.scale)
+                width: Math.round(view.pageW * view.pageScale)
+                height: Math.round(view.pageH * view.pageScale)
                 x: Math.round((parent.width - width) / 2)
                 y: Math.round((parent.height - view.barRoom - height) / 2)
                 color: "white"
@@ -112,9 +139,31 @@ Rectangle {
             }
         }
 
+        // Ctrl + wheel zooms at the pointer. It sits on the content so it hears
+        // the wheel before the Flickable scrolls with it. Deltas add up to one
+        // step per notch (120), so a touchpad or smooth wheel, which send many
+        // small deltas, doesn't race through every zoom level at once.
+        //
+        // WheelHandler takes only mouse wheels unless told otherwise, and on
+        // Wayland Qt reports scrolling as coming from a touchpad, even from a
+        // mouse wheel. Without TouchPad here, Ctrl + wheel does nothing.
         WheelHandler {
+            id: wheelZoom
+            target: null
+            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
             acceptedModifiers: Qt.ControlModifier
-            onWheel: (event) => event.angleDelta.y > 0 ? view.zoomIn() : view.zoomOut()
+            property real pending: 0
+            onWheel: (event) => {
+                const delta = event.angleDelta.y !== 0 ? event.angleDelta.y : event.pixelDelta.y
+                if (delta === 0)
+                    return
+                if (Math.sign(delta) !== Math.sign(pending))
+                    pending = 0
+                pending += delta
+                const at = view.mapFromItem(sheet, point.position.x, point.position.y)
+                while (pending >= 120) { pending -= 120; view.zoomIn(at) }
+                while (pending <= -120) { pending += 120; view.zoomOut(at) }
+            }
         }
     }
 
