@@ -250,8 +250,8 @@ QString Exporter::defaultOcrLanguage() const {
 }
 
 QString Exporter::suggestedName(const QString &extension) const {
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-    const QString stem = QStringLiteral("Scan %1").arg(QDate::currentDate().toString(Qt::ISODate));
+    const QString dir = userFolder(QStandardPaths::DocumentsLocation, true);
+    const QString stem = defaultStem();
     // Several pictures are numbered from the name, so those count as taken too.
     const auto taken = [&](const QString &name) {
         const QString numbered = dir + u'/' + QFileInfo(name).completeBaseName() + u'-';
@@ -262,6 +262,33 @@ QString Exporter::suggestedName(const QString &extension) const {
     for (int n = 2; taken(name); ++n)
         name = QStringLiteral("%1 (%2).%3").arg(stem).arg(n).arg(extension);
     return name;
+}
+
+QString Exporter::userFolder(QStandardPaths::StandardLocation location, bool existing) {
+    const QString system = QStandardPaths::writableLocation(location);
+    if (QDir(system) != QDir::home())
+        return system;
+    const QString own = QDir::home().filePath(location == QStandardPaths::PicturesLocation
+                                                  ? QStringLiteral("Pictures") : QStringLiteral("Documents"));
+    return !existing || QFileInfo(own).isDir() ? own : system;
+}
+
+QString Exporter::defaultStem() {
+    return QStringLiteral("Scan %1").arg(QDate::currentDate().toString(Qt::ISODate));
+}
+
+QStringList Exporter::freeNames(const QString &path, int count, bool confirmed) {
+    return exportNames(path, count, QFileInfo(path).suffix(), confirmed);
+}
+
+QString Exporter::write(const QList<Page> &pages, const QStringList &names, const QVariantMap &options) {
+    if (pages.isEmpty() || names.isEmpty())
+        return tr("Nothing to export");
+    m_cancel = false;
+    if (options.value(QStringLiteral("format")).toString() != u"pdf")
+        return names.size() == pages.size() ? writeImages(pages, names, options) : tr("Nothing to export");
+    const bool ocr = options.value(QStringLiteral("ocr")).toBool() && ocrAvailable();
+    return ocr ? writeOcrPdf(pages, names.first(), options) : writePdf(pages, names.first(), options);
 }
 
 QList<Page> Exporter::selectedPages(const QVariantMap &options) const {

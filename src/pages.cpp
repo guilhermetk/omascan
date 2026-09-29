@@ -463,6 +463,17 @@ void PageModel::append(Page page) {
     emit currentChanged();
 }
 
+QString PageModel::readScan(const QString &path, qreal dpi, Page *page) {
+    page->source = path;
+    page->dpi = saneDpi(dpi);
+    page->sourceSize = orientedSize(path);
+    if (!page->sourceSize.isValid())
+        return tr("The scanner sent a picture that could not be read.");
+    if (!fitsInMemory(page->sourceSize))
+        return tr("That scan is too large to work with. Try a lower resolution.");
+    return {};
+}
+
 void PageModel::addScan(const QString &path, qreal dpi) {
     // Scans are written into incoming/ so a half-written file is never taken
     // for a page; once whole, they join the session.
@@ -482,17 +493,9 @@ void PageModel::addScan(const QString &path, qreal dpi) {
         }
     }
     Page page;
-    page.source = source;
-    page.dpi = saneDpi(dpi);
-    page.sourceSize = orientedSize(source);
-    if (!page.sourceSize.isValid()) {
+    if (const QString error = readScan(source, dpi, &page); !error.isEmpty()) {
         QFile::remove(source);
-        emit message(tr("The scanner sent a picture that could not be read."));
-        return;
-    }
-    if (!fitsInMemory(page.sourceSize)) {
-        QFile::remove(source);
-        emit message(tr("That scan is too large to work with. Try a lower resolution."));
+        emit message(error);
         return;
     }
     checkpoint(tr("Scan"));

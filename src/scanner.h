@@ -36,7 +36,8 @@ class Scanner : public QObject {
     Q_PROPERTY(bool ready READ ready NOTIFY readyChanged)
 
 public:
-    explicit Scanner(const QString &incomingDir, QObject *parent = nullptr);
+    // `discover` false leaves finding scanners to refresh() or useDevice().
+    explicit Scanner(const QString &incomingDir, bool discover = true, QObject *parent = nullptr);
     ~Scanner() override;
 
     bool available() const { return !m_program.isEmpty(); }
@@ -63,6 +64,13 @@ public:
     int pagesThisRun() const { return m_pagesThisRun; }
     QString status() const { return m_status; }
     bool ready() const;
+
+    // Straight to this device, without looking for others first.
+    void useDevice(const QString &id);
+    // Off for a one-time scan: settings changed here are not saved.
+    void setRemember(bool remember) { m_remember = remember; }
+    // Whether the last scan failed because something else had the scanner.
+    bool deviceBusy() const { return m_deviceBusy; }
 
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void scan();
@@ -121,5 +129,7 @@ private:
     QString m_singleOutput;
     QString m_stderrTail;
     bool m_cancelled = false;
+    bool m_deviceBusy = false;
+    bool m_remember = true;
     QString m_status;
 };

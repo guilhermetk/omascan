@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
-# Build and run the model and export tests (no window, no scanner needed).
+# Build and run the model, export and command line tests (no window, and
+# bin/fake-scanimage in place of a scanner).
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 mkdir -p "$ROOT/build/tests"

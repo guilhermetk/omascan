@@ -1,5 +1,6 @@
 // The model and the exporter, without a window: pages in, edits, undo, what
-// survives a restart, and every export format written and readable.
+// survives a restart, and every export format written and readable. The
+// command line too, scanning with bin/fake-scanimage.
 
 #include <QImage>
 #include <QImageReader>
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <memory>
 
+#include "cli.h"
 #include "exporter.h"
 #include "keys.h"
 #include "pages.h"
@@ -62,6 +64,18 @@ void addScan(PageModel &model, const QString &picture) {
     model.addScan(copy, 150);
 }
 
+struct CliResult { int code; QJsonObject json; QString out; QString err; };
+
+// Runs `omascan <arguments>` in this process, answering prompts with `input`.
+CliResult cli(const QStringList &arguments, const QString &input = {}) {
+    QString inText = input, outText, errText;
+    QTextStream in(&inText), out(&outText), err(&errText);
+    const int code = Cli::run(QStringList{QStringLiteral("omascan")} + arguments, in, out, err);
+    out.flush();
+    err.flush();
+    return {code, QJsonDocument::fromJson(outText.toUtf8()).object(), outText, errText};
+}
+
 bool waitForExport(Exporter &exporter, bool *ok, QString *message) {
     QSignalSpy spy(&exporter, &Exporter::finished);
     if (!spy.wait(120000))
@@ -85,7 +99,18 @@ class OmaScanTest : public QObject {
 
 private slots:
     void initTestCase() {
+        // Before anything reads a setting: QSettings keeps the first folder it sees.
+        Cli::setIdentity();
         qputenv("XDG_DATA_HOME", m_home.path().toLocal8Bit());
+        qputenv("XDG_CONFIG_HOME", (m_home.path() + QStringLiteral("/config")).toLocal8Bit());
+        qputenv("OMASCAN_SCANIMAGE", OMASCAN_ROOT "/bin/fake-scanimage");
+        // Where `omascan scan` puts its files, instead of the real home's.
+        QDir().mkpath(m_home.path() + QStringLiteral("/config"));
+        QFile dirs(m_home.path() + QStringLiteral("/config/user-dirs.dirs"));
+        QVERIFY(dirs.open(QIODevice::WriteOnly));
+        dirs.write(QStringLiteral("XDG_DOCUMENTS_DIR=\"%1/Documents\"\nXDG_PICTURES_DIR=\"%1/Pictures\"\n")
+                       .arg(m_home.path()).toUtf8());
+        dirs.close();
         QImageReader::setAllocationLimit(PageRender::kImageLimitMiB);
         QStandardPaths::setTestModeEnabled(false);
         m_pictures << makePage(m_out.path(), QStringLiteral("a.png"), QStringLiteral("Invoice Alpha"))
@@ -548,6 +573,132 @@ private slots:
         QCOMPARE(model.count(), 0);
         QCOMPARE(said.size(), 1);
         QCOMPARE(QDir(model.sessionDir()).entryList({QStringLiteral("*.png")}, QDir::Files), QStringList{});
+    }
+
+    // Until a scanner is chosen, a scan says to run setup, in a way the bar
+    // plugin can tell apart.
+    void cliNeedsSetup() {
+        const CliResult result = cli({QStringLiteral("scan"), QStringLiteral("--json")});
+        QCOMPARE(result.code, int(Cli::NotSetUp));
+        QCOMPARE(result.json.value("error").toString(), QStringLiteral("setup"));
+    }
+
+    // Setup lists the scanners and saves the one picked, and the file type.
+    void cliSetup() {
+        const CliResult result = cli({QStringLiteral("setup")}, QStringLiteral("2\n2\n"));
+        QVERIFY2(result.code == Cli::Ok, qPrintable(result.err));
+        QVERIFY(result.out.contains(QStringLiteral("Oma Feeder 9000")));
+        QCOMPARE(cli({QStringLiteral("config"), QStringLiteral("get"), QStringLiteral("device")}).out.trimmed(),
+                 QStringLiteral("fake:adf"));
+        QCOMPARE(cli({QStringLiteral("config"), QStringLiteral("get"), QStringLiteral("format")}).out.trimmed(),
+                 QStringLiteral("png"));
+        // Input that ends before an answer saves nothing.
+        QCOMPARE(cli({QStringLiteral("setup")}, QStringLiteral("1\n")).code, int(Cli::Failed));
+        QCOMPARE(cli({QStringLiteral("config"), QStringLiteral("get"), QStringLiteral("device")}).out.trimmed(),
+                 QStringLiteral("fake:adf"));
+    }
+
+    void cliConfig() {
+        const auto set = [](const QString &key, const QString &value) {
+            return cli({QStringLiteral("config"), QStringLiteral("set"), key, value}).code;
+        };
+        QCOMPARE(set(QStringLiteral("device"), QStringLiteral("fake:flatbed")), int(Cli::Ok));
+        QCOMPARE(set(QStringLiteral("format"), QStringLiteral("PDF")), int(Cli::Ok));
+        QCOMPARE(cli({QStringLiteral("config"), QStringLiteral("get"), QStringLiteral("format")}).out.trimmed(),
+                 QStringLiteral("pdf"));
+        QCOMPARE(set(QStringLiteral("format"), QStringLiteral("tiff")), int(Cli::Failed));
+        QCOMPARE(set(QStringLiteral("filter"), QStringLiteral("sepia")), int(Cli::Failed));
+        QCOMPARE(set(QStringLiteral("resolution"), QStringLiteral("lots")), int(Cli::Failed));
+        QCOMPARE(set(QStringLiteral("colour"), QStringLiteral("red")), int(Cli::Failed));
+        QCOMPARE(set(QStringLiteral("resolution"), QStringLiteral("75")), int(Cli::Ok));
+        QVERIFY(cli({QStringLiteral("config")}).out.contains(QStringLiteral("resolution 75")));
+    }
+
+    // A scan becomes a finished file: a PDF in Documents, a PNG in Pictures,
+    // never over one already there.
+    void cliScansToFiles() {
+        CliResult result = cli({QStringLiteral("scan"), QStringLiteral("--json")});
+        QVERIFY2(result.code == Cli::Ok, qPrintable(result.out + result.err));
+        const QString pdf = result.json.value("files").toArray().at(0).toString();
+        QCOMPARE(QFileInfo(pdf).absolutePath(), m_home.path() + QStringLiteral("/Documents"));
+        QVERIFY(run(QStringLiteral("pdfinfo"), {pdf}).contains(QStringLiteral("Pages:           1")));
+
+        result = cli({QStringLiteral("scan"), QStringLiteral("--json")});
+        QCOMPARE(result.json.value("files").toArray().at(0).toString(),
+                 QFileInfo(pdf).absolutePath() + u'/' + QFileInfo(pdf).completeBaseName() + QStringLiteral(" (2).pdf"));
+
+        result = cli({QStringLiteral("scan"), QStringLiteral("--json"), QStringLiteral("--format"), QStringLiteral("png"),
+                      QStringLiteral("--filter"), QStringLiteral("bw")});
+        QVERIFY2(result.code == Cli::Ok, qPrintable(result.out + result.err));
+        const QString png = result.json.value("files").toArray().at(0).toString();
+        QCOMPARE(QFileInfo(png).absolutePath(), m_home.path() + QStringLiteral("/Pictures"));
+        const QImage image(png);
+        QVERIFY(!image.isNull());
+        QVERIFY(image.allGray());
+        QVERIFY(image.width() > 500); // 75 dpi, from the saved setting
+    }
+
+    // Every page from the feeder: numbered pictures, or one PDF.
+    void cliScansFeeder() {
+        qputenv("FAKE_SCAN_PAGES", "2");
+        const QString dir = m_out.path() + QStringLiteral("/feeder");
+        QVERIFY(QDir().mkpath(dir));
+        const CliResult result = cli({QStringLiteral("scan"), QStringLiteral("--json"), QStringLiteral("--device"),
+                                      QStringLiteral("fake:adf"), QStringLiteral("--source"), QStringLiteral("adf"),
+                                      QStringLiteral("-o"), dir, QStringLiteral("--format"), QStringLiteral("png")});
+        qunsetenv("FAKE_SCAN_PAGES");
+        QVERIFY2(result.code == Cli::Ok, qPrintable(result.out + result.err));
+        QCOMPARE(result.json.value("pages").toInt(), 2);
+        const QJsonArray files = result.json.value("files").toArray();
+        QCOMPARE(files.size(), 2);
+        QVERIFY(files.at(1).toString().endsWith(QStringLiteral("-02.png")));
+        QVERIFY(!QImage(files.at(1).toString()).isNull());
+        // A setting given on the command line is for that scan only.
+        QCOMPARE(cli({QStringLiteral("config"), QStringLiteral("get"), QStringLiteral("device")}).out.trimmed(),
+                 QStringLiteral("fake:flatbed"));
+    }
+
+    // user-dirs.dirs turns a folder off by setting it to home itself; scans
+    // then go to ~/Documents and ~/Pictures, not loose in home.
+    void homeAsFolderMeansUnset() {
+        const QByteArray home = qgetenv("HOME");
+        qputenv("HOME", m_home.path().toLocal8Bit());
+        QFile dirs(m_home.path() + QStringLiteral("/config/user-dirs.dirs"));
+        QVERIFY(dirs.open(QIODevice::ReadOnly));
+        const QByteArray saved = dirs.readAll();
+        dirs.close();
+        QVERIFY(dirs.open(QIODevice::WriteOnly));
+        dirs.write("XDG_DOCUMENTS_DIR=\"$HOME/\"\nXDG_PICTURES_DIR=\"$HOME\"\n");
+        dirs.close();
+
+        const QString documents = Exporter::userFolder(QStandardPaths::DocumentsLocation);
+        const QString pictures = Exporter::userFolder(QStandardPaths::PicturesLocation);
+        const QString existing = Exporter::userFolder(QStandardPaths::DocumentsLocation, true);
+
+        QVERIFY(dirs.open(QIODevice::WriteOnly));
+        dirs.write(saved);
+        dirs.close();
+        qputenv("HOME", home);
+        QCOMPARE(documents, m_home.path() + QStringLiteral("/Documents"));
+        QCOMPARE(pictures, m_home.path() + QStringLiteral("/Pictures"));
+        // The save dialog only opens in a folder that is there.
+        QCOMPARE(existing, QFileInfo::exists(m_home.path() + QStringLiteral("/Documents"))
+                               ? m_home.path() + QStringLiteral("/Documents") : m_home.path());
+    }
+
+    void cliScanErrors() {
+        qputenv("FAKE_SCAN_FAIL", "busy");
+        CliResult result = cli({QStringLiteral("scan"), QStringLiteral("--json")});
+        qunsetenv("FAKE_SCAN_FAIL");
+        QCOMPARE(result.code, int(Cli::Busy));
+        QCOMPARE(result.json.value("error").toString(), QStringLiteral("busy"));
+
+        result = cli({QStringLiteral("scan"), QStringLiteral("--mode"), QStringLiteral("Sepia")});
+        QCOMPARE(result.code, int(Cli::Failed));
+        QVERIFY(result.err.contains(QStringLiteral("Color, Gray, Lineart")));
+
+        result = cli({QStringLiteral("scan"), QStringLiteral("-o"), m_out.path() + QStringLiteral("/x.tiff")});
+        QCOMPARE(result.code, int(Cli::Failed));
     }
 
     void cleanupTestCase() {

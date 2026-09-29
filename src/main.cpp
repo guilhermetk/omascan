@@ -9,6 +9,7 @@
 #include <QLockFile>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QTextStream>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
@@ -16,6 +17,7 @@
 #include <QTimer>
 #include <QUrl>
 
+#include "cli.h"
 #include "exporter.h"
 #include "filechooser.h"
 #include "keys.h"
@@ -65,25 +67,34 @@ int captureInterface(QQmlApplicationEngine &engine, Scanner &scanner, const QStr
 } // namespace
 
 int main(int argc, char *argv[]) {
+    Cli::setIdentity();
+    QImageReader::setAllocationLimit(PageRender::kImageLimitMiB);
+
+    // `omascan scan` and the other commands need no window, nor a display.
+    if (Cli::wanted(argc, argv)) {
+        QCoreApplication app(argc, argv);
+        QTextStream in(stdin), out(stdout), err(stderr);
+        return Cli::run(app.arguments(), in, out, err);
+    }
+
     QGuiApplication app(argc, argv);
-    // The identity trio: setDesktopFileName becomes the Wayland app_id, which
-    // is what Hyprland window rules and the launcher match on.
-    app.setApplicationName(QStringLiteral("omascan"));
-    app.setOrganizationDomain(QStringLiteral("omascan"));
+    // setDesktopFileName becomes the Wayland app_id, which is what Hyprland
+    // window rules and the launcher match on.
     app.setApplicationDisplayName(QStringLiteral("OmaScan"));
     app.setDesktopFileName(QStringLiteral("omascan"));
     app.setWindowIcon(QIcon::fromTheme(QStringLiteral("omascan")));
 
     QCommandLineParser parser;
-    parser.setApplicationDescription(QStringLiteral("OmaScan — document scanning for Omarchy."));
+    parser.setApplicationDescription(QStringLiteral(
+        "OmaScan — document scanning for Omarchy.\n\n"
+        "Commands, which scan without the window: scan, devices, setup, config.\n"
+        "`omascan help` lists them."));
     parser.addHelpOption();
     QCommandLineOption shot(QStringLiteral("ui-shot"),
                             QStringLiteral("Save screenshots of the interface to <dir> and quit."),
                             QStringLiteral("dir"));
     parser.addOption(shot);
     parser.process(app);
-
-    QImageReader::setAllocationLimit(PageRender::kImageLimitMiB);
 
     // One window per session folder: a second one would save over the first
     // one's pages, and could delete the pictures it thinks nobody uses.

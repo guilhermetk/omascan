@@ -9,6 +9,8 @@
 #include <QStandardPaths>
 #include <QUuid>
 
+#include "exporter.h"
+
 namespace {
 
 const QString kService = QStringLiteral("org.freedesktop.portal.Desktop");
@@ -61,7 +63,7 @@ void FileChooser::saveFile(const QString &title, const QString &suggestedName,
     QVariantMap options;
     options.insert(QStringLiteral("current_name"), suggestedName);
     // current_folder is a NUL-terminated byte string.
-    QByteArray folder = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation).toUtf8();
+    QByteArray folder = Exporter::userFolder(QStandardPaths::DocumentsLocation, true).toUtf8();
     folder.append('\0');
     options.insert(QStringLiteral("current_folder"), folder);
     if (!patterns.isEmpty()) {

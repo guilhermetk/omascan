@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QStandardPaths>
 #include <QStringList>
 #include <QUrl>
 #include <QVariantMap>
@@ -43,6 +44,22 @@ public:
     Q_INVOKABLE void showInFolder(const QUrl &file) const;
     // A file name that does not exist yet, for the save dialog to suggest.
     Q_INVOKABLE QString suggestedName(const QString &extension) const;
+    // Documents or Pictures. One set to the home folder itself, which is how
+    // user-dirs.dirs turns a folder off, is taken to mean ~/Documents and so
+    // on, not scans scattered across home. `existing` keeps to folders that
+    // are already there, falling back to what the system says.
+    static QString userFolder(QStandardPaths::StandardLocation location, bool existing = false);
+    // What a scan is called before anyone names it: "Scan 2026-09-29".
+    static QString defaultStem();
+    // The files for `count` pages exported to `path` (one file for a PDF),
+    // moved on to "name (2)" and so on while any of them is taken. A path
+    // someone `confirmed` may be replaced; the numbered ones never are.
+    static QStringList freeNames(const QString &path, int count, bool confirmed = false);
+
+    // For the command line: writes the pages on this thread, as a PDF at
+    // names.first() or one picture per name, and returns an error or empty.
+    // options: those of exportPdf or exportImages, with format "pdf" for a PDF.
+    QString write(const QList<Page> &pages, const QStringList &names, const QVariantMap &options);
 
 signals:
     void busyChanged();

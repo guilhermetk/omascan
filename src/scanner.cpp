@@ -12,6 +12,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <csignal>
+
+#include <sys/prctl.h>
 
 namespace {
 
@@ -51,7 +54,7 @@ QString localPaper() {
 
 } // namespace
 
-Scanner::Scanner(const QString &incomingDir, QObject *parent)
+Scanner::Scanner(const QString &incomingDir, bool discover, QObject *parent)
     : QObject(parent), m_incoming(incomingDir) {
     const QString override = qEnvironmentVariable("OMASCAN_SCANIMAGE");
     m_program = !override.isEmpty() ? override
@@ -68,10 +71,10 @@ Scanner::Scanner(const QString &incomingDir, QObject *parent)
     m_resolution = settings.value(QStringLiteral("scan/resolution"), 300).toInt();
     m_paperSize = settings.value(QStringLiteral("scan/paper"), localPaper()).toString();
 
-    if (available())
-        refresh();
-    else
+    if (!available())
         setStatus(tr("SANE is not installed"));
+    else if (discover)
+        refresh();
 }
 
 Scanner::~Scanner() {
@@ -159,6 +162,16 @@ void Scanner::refresh() {
     giveUpAfter(m_discover, 90000);
 }
 
+void Scanner::useDevice(const QString &id) {
+    if (!available() || m_discover || m_scan || id.isEmpty())
+        return;
+    m_devices = {QVariantMap{{QStringLiteral("id"), id}, {QStringLiteral("name"), id},
+                             {QStringLiteral("kind"), QString()}}};
+    emit devicesChanged();
+    m_deviceIndex = -1; // force a reload even when it is the same device
+    setDeviceIndex(0);
+}
+
 void Scanner::setDeviceIndex(int index) {
     if (index == m_deviceIndex || index >= m_devices.size() || m_scan)
         return;
@@ -166,7 +179,8 @@ void Scanner::setDeviceIndex(int index) {
     emit deviceIndexChanged();
     emit readyChanged();
     if (!deviceId().isEmpty()) {
-        QSettings().setValue(QStringLiteral("scan/device"), deviceId());
+        if (m_remember)
+            QSettings().setValue(QStringLiteral("scan/device"), deviceId());
         loadOptions();
     }
 }
@@ -321,6 +335,8 @@ QStringList Scanner::paperSizes() const {
 bool Scanner::feeder() const { return isFeeder(m_source); }
 
 void Scanner::remember() const {
+    if (!m_remember)
+        return;
     QSettings settings;
     settings.setValue(QStringLiteral("scan/mode"), m_mode);
     settings.setValue(QStringLiteral("scan/source"), m_source);
@@ -390,7 +406,11 @@ void Scanner::scan() {
     }
 
     m_scan = new QProcess(this);
+    // Should OmaScan die mid-scan, scanimage is stopped too rather than left
+    // holding the scanner; SIGTERM lets it cancel cleanly.
+    m_scan->setChildProcessModifier([] { ::prctl(PR_SET_PDEATHSIG, SIGTERM); });
     m_cancelled = false;
+    m_deviceBusy = false;
     m_pagesThisRun = 0;
     m_progress = -1;
     m_stderrTail.clear();
@@ -492,6 +512,7 @@ void Scanner::scanFinished(int exitCode, QProcess::ExitStatus status) {
     if (m_cancelled)
         setStatus(tr("Scan cancelled"));
     else if (!ok) {
+        m_deviceBusy = m_stderrTail.contains(QStringLiteral("busy"), Qt::CaseInsensitive);
         const QString message = friendlyError(m_stderrTail);
         setStatus(message);
         emit failed(message);

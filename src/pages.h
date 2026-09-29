@@ -105,6 +105,9 @@ public:
 
     // Adds a scanned picture as the last page; the file moves into the session.
     Q_INVOKABLE void addScan(const QString &path, qreal dpi);
+    // A page for a scanned picture, or why it cannot be one. The picture
+    // stays where it is.
+    static QString readScan(const QString &path, qreal dpi, Page *page);
 
     // Counts every change to the pages, so an export can tell whether what it
     // wrote is still the whole document.

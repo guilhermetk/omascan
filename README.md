@@ -118,6 +118,51 @@ Every page has a **look**:
 
 ![The Export sheet](docs/screenshots/export.png)
 
+## Scanning from the terminal
+
+`omascan scan` scans without opening the window and writes a finished file: a
+PDF to **Documents**, or a PNG to **Pictures**. It prints where the file went.
+It's handy for a key binding or a script.
+
+The first time, pick the scanner and the kind of file:
+
+```sh
+omascan setup
+```
+
+If you've scanned in the window before, the scanner is already set. The
+terminal and the window share the same scanner, colour, resolution and paper
+choices, and a PDF is written with the window's last export settings (paper,
+quality, searchable text).
+
+```sh
+omascan scan                         # one page, or every page in the feeder
+omascan scan --format png            # this time as a picture
+omascan scan -o ~/tax/receipt.pdf    # to a file of your choosing
+omascan scan --resolution 600 --mode Gray --filter bw
+omascan devices                      # the scanners SANE can see
+omascan config                       # the saved settings
+omascan config set format png        # change one
+```
+
+A scan never replaces a file already there: the next one is called
+`Scan 2026-09-29 (2).pdf`, and so on. Only a file named with `-o` is
+overwritten. Feeder pages as pictures are numbered: `Scan 2026-09-29-01.png`,
+`-02.png`…
+
+For scripts, `--json` prints one line, such as
+`{"ok":true,"files":["…/Scan 2026-09-29.pdf"],"pages":1}`, and the exit code
+says what happened:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Scanned and saved |
+| 1 | Bad arguments, or the file could not be written |
+| 2 | No scanner chosen yet: run `omascan setup` |
+| 3 | The scanner is busy: another scan, or another app, is using it |
+| 4 | The scan failed: scanner off or unreachable, paper jam, empty feeder… |
+| 130 | Cancelled with Ctrl+C |
+
 ## Keys
 
 | Key | Action |
@@ -153,7 +198,7 @@ them in place:
 
 | Folder | What's in it |
 | --- | --- |
-| `~/.config/omascan/` | Your scanner and export choices |
+| `~/.config/omascan/` | Your scanner and export choices, for the window and `omascan scan` |
 | `~/.local/share/omascan/session/` | The pages of the document you're working on |
 
 OmaScan makes no network connections of its own; network scanners are reached
@@ -184,7 +229,7 @@ through SANE.
 
 ```sh
 ./bin/build     # builds build/omascan
-./bin/test      # model and export tests; no window or scanner needed
+./bin/test      # model, export and command line tests; no window or scanner needed
 ```
 
 To try OmaScan without a scanner, `bin/fake-scanimage` stands in for SANE's
@@ -210,6 +255,8 @@ How it fits together:
 
 - `src/scanner.cpp` runs SANE's `scanimage`: finding devices, reading their
   options, scanning with progress, feeder batches and cancelling.
+- `src/cli.cpp` is `omascan scan`, `devices`, `setup` and `config`: the same
+  scanner and exporter, without the window.
 - `src/pages.cpp` holds the pages. Each is the untouched scan plus its
   settings (rotation, crop, look), drawn when needed; undo is a copy of the list.
 - `src/exporter.cpp` writes PDFs itself (JPEG for colour and grey, one bit for

@@ -7,6 +7,7 @@ TEMPLATE = app
 INCLUDEPATH += src
 
 HEADERS += \
+    src/cli.h \
     src/exporter.h \
     src/filechooser.h \
     src/keys.h \
@@ -17,6 +18,7 @@ HEADERS += \
 
 SOURCES += \
     src/main.cpp \
+    src/cli.cpp \
     src/exporter.cpp \
     src/filechooser.cpp \
     src/keys.cpp \
