@@ -44,16 +44,19 @@ Dialog {
         return { scope: dialog.scope, format: prefs.format === 1 ? "jpeg" : "png" }
     }
 
-    // Called with the file the person picked.
+    // Called with the file the person picked. A name changed after the dialog
+    // confirmed it must not overwrite anything.
     function choose(kind, url) {
         let path = url.toString()
         if (kind === "pdf") {
-            if (!/\.pdf$/i.test(path)) path += ".pdf"
-            Exporter.exportPdf(path, pdfOptions())
+            const confirmed = /\.pdf$/i.test(path)
+            if (!confirmed) path += ".pdf"
+            Exporter.exportPdf(path, Object.assign(pdfOptions(), { confirmed: confirmed }))
         } else {
             const ext = prefs.format === 1 ? /\.(jpe?g)$/i : /\.png$/i
-            if (!ext.test(path)) path = path.replace(/\.(png|jpe?g)$/i, "") + (prefs.format === 1 ? ".jpg" : ".png")
-            Exporter.exportImages(path, imageOptions())
+            const confirmed = ext.test(path)
+            if (!confirmed) path = path.replace(/\.(png|jpe?g)$/i, "") + (prefs.format === 1 ? ".jpg" : ".png")
+            Exporter.exportImages(path, Object.assign(imageOptions(), { confirmed: confirmed }))
         }
     }
 

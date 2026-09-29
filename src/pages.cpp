@@ -503,6 +503,7 @@ void PageModel::addScan(const QString &path, qreal dpi) {
 void PageModel::touch(int index) {
     Page &p = m_pages[index];
     ++p.revision;
+    m_exported = false;
     ++m_changes;
     syncMirror();
     emit dataChanged(this->index(index), this->index(index));

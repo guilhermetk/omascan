@@ -107,10 +107,12 @@ QByteArray jpeg(const QImage &image, int quality) {
     return writer.write(image) ? bytes : QByteArray();
 }
 
-// The files a picture export writes: the chosen name for one page, numbered
-// from it for several. The save dialog only confirmed the chosen name, so any
-// other name already taken moves the whole set on to "name (2)" and so on.
-QStringList pictureNames(const QString &path, int count, const QString &extension) {
+// The files an export writes: the chosen name for one file, numbered from it
+// for several pictures. The save dialog only confirmed the chosen name, and not
+// even that once the extension was changed after it, so any other name already
+// taken moves the whole set on to "name (2)" and so on.
+QStringList exportNames(const QString &path, int count, const QString &extension,
+                        bool confirmed) {
     const QFileInfo chosen(path);
     const int digits = count >= 100 ? 3 : 2;
     const auto namesFor = [&](const QString &stem) {
@@ -123,7 +125,7 @@ QStringList pictureNames(const QString &path, int count, const QString &extensio
         return names;
     };
     const auto taken = [&](const QString &name) {
-        return name != chosen.absoluteFilePath() && QFileInfo::exists(name);
+        return (!confirmed || name != chosen.absoluteFilePath()) && QFileInfo::exists(name);
     };
     QStringList names = namesFor(chosen.completeBaseName());
     for (int n = 2; std::any_of(names.cbegin(), names.cend(), taken); ++n)
@@ -311,13 +313,15 @@ void Exporter::run(std::function<QString()> job, const QUrl &file, bool wholeDoc
 
 void Exporter::exportPdf(const QUrl &file, const QVariantMap &options) {
     const QList<Page> pages = selectedPages(options);
-    const QString path = file.toLocalFile();
-    if (pages.isEmpty() || path.isEmpty())
+    const QString chosen = file.toLocalFile();
+    if (pages.isEmpty() || chosen.isEmpty())
         return;
+    const QString path = exportNames(chosen, 1, QFileInfo(chosen).suffix(),
+                                     options.value(QStringLiteral("confirmed"), true).toBool()).first();
     const bool ocr = options.value(QStringLiteral("ocr")).toBool() && ocrAvailable();
     run([this, pages, path, options, ocr] {
         return ocr ? writeOcrPdf(pages, path, options) : writePdf(pages, path, options);
-    }, file, pages.size() == m_model->count());
+    }, QUrl::fromLocalFile(path), pages.size() == m_model->count());
 }
 
 void Exporter::exportImages(const QUrl &file, const QVariantMap &options) {
@@ -326,8 +330,9 @@ void Exporter::exportImages(const QUrl &file, const QVariantMap &options) {
     if (pages.isEmpty() || path.isEmpty())
         return;
     const bool png = options.value(QStringLiteral("format")).toString() != u"jpeg";
-    const QStringList names = pictureNames(path, int(pages.size()),
-                                           png ? QStringLiteral("png") : QStringLiteral("jpg"));
+    const QStringList names = exportNames(path, int(pages.size()),
+                                           png ? QStringLiteral("png") : QStringLiteral("jpg"),
+                                           options.value(QStringLiteral("confirmed"), true).toBool());
     // Open and Show in folder go to the first picture written.
     run([this, pages, names, options] { return writeImages(pages, names, options); },
         QUrl::fromLocalFile(names.first()), pages.size() == m_model->count());

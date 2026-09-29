@@ -277,6 +277,66 @@ private slots:
         QCOMPARE(restarted.restoredCount(), 3);
     }
 
+    // An adjustment made without an undo step, as a slider moved by keyboard
+    // does, still means there is unsaved work after an export.
+    void adjustmentAfterExportComesBack() {
+        PageModel model;
+        model.clear();
+        addScan(model, m_pictures.at(0));
+        Exporter exporter(&model);
+        exporter.exportPdf(QUrl::fromLocalFile(m_out.path() + QStringLiteral("/adjusted.pdf")), {});
+        bool ok = false;
+        QString message;
+        QVERIFY(waitForExport(exporter, &ok, &message));
+        QVERIFY2(ok, qPrintable(message));
+        model.setAdjustment(0, QStringLiteral("brightness"), 10);
+        PageModel restarted;
+        QCOMPARE(restarted.restoredCount(), 1);
+    }
+
+    // A name whose extension was changed after the save dialog confirmed it
+    // was never asked about, so it is not replaced.
+    void unconfirmedNameIsKept() {
+        PageModel model;
+        model.clear();
+        addScan(model, m_pictures.at(0));
+        Exporter exporter(&model);
+        const QString dir = m_out.path() + QStringLiteral("/renamed");
+        QVERIFY(QDir().mkpath(dir));
+        const QString existing = dir + QStringLiteral("/scan.jpg");
+        QFile file(existing);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("keep");
+        file.close();
+        QSignalSpy spy(&exporter, &Exporter::finished);
+        exporter.exportImages(QUrl::fromLocalFile(existing), {{"format", "jpeg"}, {"confirmed", false}});
+        QVERIFY(spy.wait(120000));
+        QVERIFY2(spy.first().at(0).toBool(), qPrintable(spy.first().at(1).toString()));
+        QCOMPARE(spy.first().at(2).toUrl().toLocalFile(), dir + QStringLiteral("/scan (2).jpg"));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("keep"));
+
+        // The same goes for ".pdf" added to a name typed without it.
+        const QString pdf = dir + QStringLiteral("/scan.pdf");
+        QFile existingPdf(pdf);
+        QVERIFY(existingPdf.open(QIODevice::WriteOnly));
+        existingPdf.write("keep");
+        existingPdf.close();
+        QSignalSpy pdfSpy(&exporter, &Exporter::finished);
+        exporter.exportPdf(QUrl::fromLocalFile(pdf), {{"confirmed", false}});
+        QVERIFY(pdfSpy.wait(120000));
+        QVERIFY2(pdfSpy.first().at(0).toBool(), qPrintable(pdfSpy.first().at(1).toString()));
+        QCOMPARE(pdfSpy.first().at(2).toUrl().toLocalFile(), dir + QStringLiteral("/scan (2).pdf"));
+        QVERIFY(existingPdf.open(QIODevice::ReadOnly));
+        QCOMPARE(existingPdf.readAll(), QByteArray("keep"));
+
+        // A name the dialog confirmed is still replaced as asked.
+        QSignalSpy confirmedSpy(&exporter, &Exporter::finished);
+        exporter.exportPdf(QUrl::fromLocalFile(pdf), {});
+        QVERIFY(confirmedSpy.wait(120000));
+        QCOMPARE(confirmedSpy.first().at(2).toUrl().toLocalFile(), pdf);
+    }
+
     // Numbered pictures never replace files the save dialog did not ask about,
     // and the export reports a file that exists.
     void picturesKeepEarlierExports() {
