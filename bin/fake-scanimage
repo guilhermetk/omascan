@@ -9,7 +9,7 @@
 # how many pages the feeder holds (default 3).
 set -eu
 
-device="" format="" output="" batch="" mode="Color" resolution=150 source="Flatbed"
+device="" format="" output="" batch="" mode="Color" resolution=150 source=""
 width_mm=215.9 height_mm=297 list="" all=0 progress=0 batch_print=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,18 +48,23 @@ if [ "$all" = 1 ]; then
   echo "  Scan mode:"
   echo "    --mode Color|Gray|Lineart [Color]"
   echo "        Selects the scan mode."
+  # Like real scanners, each source has its own area: the feeder takes
+  # Legal, the glass stops at A4. The default area stays A4 either way.
+  length=297.18
   if [ "$device" = "fake:adf" ]; then
+    [ -z "$source" ] && source="ADF" # no --source: the default
+    case "$source" in ADF*) length=355.6 ;; esac
     echo "    --resolution 75|150|200|300|600dpi [150]"
-    echo "    --source Flatbed|ADF|ADF Duplex [ADF]"
+    echo "    --source Flatbed|ADF|ADF Duplex [$source]"
   else
     echo "    --resolution 50..1200dpi (in steps of 1) [150]"
     echo "    --source Flatbed [Flatbed]"
   fi
   echo "  Geometry:"
   echo "    -l 0..215.9mm [0]"
-  echo "    -t 0..297.18mm [0]"
+  echo "    -t 0..${length}mm [0]"
   echo "    -x 0..215.9mm [215.9]"
-  echo "    -y 0..297.18mm [297.18]"
+  echo "    -y 0..${length}mm [297.18]"
   exit 0
 fi
 

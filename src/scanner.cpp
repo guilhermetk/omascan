@@ -70,6 +70,7 @@ Scanner::Scanner(const QString &incomingDir, bool discover, QObject *parent)
     m_source = settings.value(QStringLiteral("scan/source")).toString();
     m_resolution = settings.value(QStringLiteral("scan/resolution"), 300).toInt();
     m_paperSize = settings.value(QStringLiteral("scan/paper"), localPaper()).toString();
+    m_paperChoice = m_paperSize;
 
     if (!available())
         setStatus(tr("SANE is not installed"));
@@ -193,6 +194,12 @@ void Scanner::loadOptions() {
         m_options->kill();
         m_options->deleteLater();
     }
+    // Asked about the chosen source, the scanner answers with that source's
+    // scan area; asked about none, with its default source's.
+    QStringList args{QStringLiteral("-d"), deviceId(), QStringLiteral("-A")};
+    const bool namedSource = m_sources.contains(m_source);
+    if (namedSource)
+        args << QStringLiteral("--source") << m_source;
     m_options = new QProcess(this);
     emit optionsChanged();
     emit readyChanged();
@@ -207,12 +214,18 @@ void Scanner::loadOptions() {
         emit readyChanged();
         setStatus(tr("Could not run scanimage"));
     });
-    connect(m_options, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
+    connect(m_options, &QProcess::finished, this, [this, namedSource](int code, QProcess::ExitStatus) {
         const QString out = QString::fromLocal8Bit(m_options->readAllStandardOutput());
         const QString err = QString::fromLocal8Bit(m_options->readAllStandardError());
         m_options->deleteLater();
         m_options = nullptr;
         parseOptions(out);
+        // The source remembered from last time is not the device's default:
+        // ask again, for its scan area. Once only, whatever the answer.
+        if (!namedSource && m_source != m_optionsSource && m_sources.contains(m_source)) {
+            loadOptions();
+            return;
+        }
         emit optionsChanged();
         emit settingsChanged();
         emit readyChanged();
@@ -221,7 +234,7 @@ void Scanner::loadOptions() {
         else
             setStatus(tr("Ready"));
     });
-    m_options->start(m_program, {QStringLiteral("-d"), deviceId(), QStringLiteral("-A")});
+    m_options->start(m_program, args);
     giveUpAfter(m_options, 60000);
 }
 
@@ -284,6 +297,7 @@ void Scanner::parseOptions(const QString &text) {
     }
     if (maxX > 0 && maxY > 0)
         m_maxArea = QSizeF(maxX, maxY);
+    m_optionsSource = defaultSource;
 
     // Keep what was chosen last time when this device offers it too.
     if (!m_modes.contains(m_mode)) {
@@ -304,7 +318,9 @@ void Scanner::parseOptions(const QString &text) {
     } else if (offered.isEmpty() && defaultResolution > 0) {
         m_resolution = defaultResolution;
     }
-    if (!paperSizes().contains(m_paperSize))
+    if (paperSizes().contains(m_paperChoice))
+        m_paperSize = m_paperChoice;
+    else if (!paperSizes().contains(m_paperSize))
         m_paperSize = paperSizes().contains(localPaper()) ? localPaper() : kFullArea;
 }
 
@@ -341,7 +357,7 @@ void Scanner::remember() const {
     settings.setValue(QStringLiteral("scan/mode"), m_mode);
     settings.setValue(QStringLiteral("scan/source"), m_source);
     settings.setValue(QStringLiteral("scan/resolution"), m_resolution);
-    settings.setValue(QStringLiteral("scan/paper"), m_paperSize);
+    settings.setValue(QStringLiteral("scan/paper"), m_paperChoice);
 }
 
 void Scanner::setMode(const QString &mode) {
@@ -356,6 +372,9 @@ void Scanner::setSource(const QString &source) {
     m_source = source;
     remember();
     emit settingsChanged();
+    // The paper sizes on offer follow the source's scan area.
+    if (m_sources.contains(source) && !deviceId().isEmpty() && !m_scan)
+        loadOptions();
 }
 
 void Scanner::setResolution(int dpi) {
@@ -366,8 +385,9 @@ void Scanner::setResolution(int dpi) {
 }
 
 void Scanner::setPaperSize(const QString &size) {
-    if (size == m_paperSize) return;
+    if (size == m_paperSize && size == m_paperChoice) return;
     m_paperSize = size;
+    m_paperChoice = size;
     remember();
     emit settingsChanged();
 }

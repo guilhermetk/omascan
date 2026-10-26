@@ -658,6 +658,24 @@ private slots:
                  QStringLiteral("fake:flatbed"));
     }
 
+    // The feeder takes longer paper than the glass: Legal is offered for it alone.
+    void cliScansFeederArea() {
+        qputenv("FAKE_SCAN_PAGES", "1");
+        const auto scan = [this](const QString &source, const QString &paper) {
+            return cli({QStringLiteral("scan"), QStringLiteral("--json"), QStringLiteral("--device"),
+                        QStringLiteral("fake:adf"), QStringLiteral("--source"), source,
+                        QStringLiteral("--paper"), paper, QStringLiteral("--resolution"), QStringLiteral("75"),
+                        QStringLiteral("-o"), m_out.path(), QStringLiteral("--format"), QStringLiteral("png")});
+        };
+        const CliResult glass = scan(QStringLiteral("flatbed"), QStringLiteral("legal"));
+        const CliResult legal = scan(QStringLiteral("adf"), QStringLiteral("legal"));
+        qunsetenv("FAKE_SCAN_PAGES");
+        QCOMPARE(glass.code, int(Cli::Failed));
+        QVERIFY2(legal.code == Cli::Ok, qPrintable(legal.out + legal.err));
+        const QImage page(legal.json.value("files").toArray().at(0).toString());
+        QCOMPARE(page.height(), 1050); // 355.6 mm at 75 dpi
+    }
+
     // user-dirs.dirs turns a folder off by setting it to home itself; scans
     // then go to ~/Documents and ~/Pictures, not loose in home.
     void homeAsFolderMeansUnset() {

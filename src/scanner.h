@@ -121,6 +121,12 @@ private:
     QString m_source;
     int m_resolution = 300;
     QString m_paperSize;
+    // The paper last picked, kept while the source on offer is too small for
+    // it (glass limits are often shorter than the feeder's), so it comes back.
+    QString m_paperChoice;
+    // The source the options above describe; scanners give each source its
+    // own scan area, so a different one means asking again.
+    QString m_optionsSource;
 
     qreal m_progress = -1;
     int m_pagesThisRun = 0;

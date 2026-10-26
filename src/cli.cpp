@@ -324,8 +324,13 @@ int scan(const QStringList &arguments, QTextStream &out, QTextStream &err) {
                     .arg(QLatin1String(what), wanted, offered.join(QStringLiteral(", "))));
         return false;
     };
+    if (!choose(source, scanner.sources(), "source", [&](const QString &v) { scanner.setSource(v); }))
+        return Failed;
+    // Another source has its own scan area, so its own paper sizes.
+    waitUntil(&scanner, &Scanner::optionsChanged, [&] { return !scanner.loadingOptions(); }, &interrupts);
+    if (interrupts.hit())
+        return report.fail(Interrupted, QStringLiteral("cancelled"), QStringLiteral("cancelled"));
     if (!choose(mode, scanner.modes(), "mode", [&](const QString &v) { scanner.setMode(v); })
-            || !choose(source, scanner.sources(), "source", [&](const QString &v) { scanner.setSource(v); })
             || !choose(paper, scanner.paperSizes(), "paper size", [&](const QString &v) { scanner.setPaperSize(v); }))
         return Failed;
     if (dpi > 0)
