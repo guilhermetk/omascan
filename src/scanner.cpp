@@ -406,11 +406,16 @@ void Scanner::scan() {
         args << QStringLiteral("--source") << m_source;
     if (m_resolution > 0)
         args << QStringLiteral("--resolution") << QString::number(m_resolution);
-    for (const Paper &p : kPapers) {
-        if (m_hasGeometry && m_paperSize == QLatin1String(p.name)) {
-            args << QStringLiteral("-l") << QStringLiteral("0") << QStringLiteral("-t") << QStringLiteral("0")
-                 << QStringLiteral("-x") << QString::number(p.w) << QStringLiteral("-y") << QString::number(p.h);
-        }
+    // The whole area is asked for too: a scanner's default can be shorter
+    // than what its feeder takes (eSCL's is A4 even when Legal fits).
+    QSizeF area = m_paperSize == kFullArea ? m_maxArea : QSizeF();
+    for (const Paper &p : kPapers)
+        if (m_paperSize == QLatin1String(p.name))
+            area = QSizeF(p.w, p.h);
+    if (m_hasGeometry && !area.isEmpty()) {
+        args << QStringLiteral("-l") << QStringLiteral("0") << QStringLiteral("-t") << QStringLiteral("0")
+             << QStringLiteral("-x") << QString::number(area.width())
+             << QStringLiteral("-y") << QString::number(area.height());
     }
 
     const QString run = QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);

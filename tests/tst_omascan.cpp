@@ -658,7 +658,8 @@ private slots:
                  QStringLiteral("fake:flatbed"));
     }
 
-    // The feeder takes longer paper than the glass: Legal is offered for it alone.
+    // The feeder takes longer paper than the glass: Legal is offered for it
+    // alone, and its whole area is scanned, not the A4 the scanner defaults to.
     void cliScansFeederArea() {
         qputenv("FAKE_SCAN_PAGES", "1");
         const auto scan = [this](const QString &source, const QString &paper) {
@@ -669,11 +670,14 @@ private slots:
         };
         const CliResult glass = scan(QStringLiteral("flatbed"), QStringLiteral("legal"));
         const CliResult legal = scan(QStringLiteral("adf"), QStringLiteral("legal"));
+        const CliResult full = scan(QStringLiteral("adf"), QStringLiteral("full area"));
         qunsetenv("FAKE_SCAN_PAGES");
         QCOMPARE(glass.code, int(Cli::Failed));
-        QVERIFY2(legal.code == Cli::Ok, qPrintable(legal.out + legal.err));
-        const QImage page(legal.json.value("files").toArray().at(0).toString());
-        QCOMPARE(page.height(), 1050); // 355.6 mm at 75 dpi
+        for (const CliResult &result : {legal, full}) {
+            QVERIFY2(result.code == Cli::Ok, qPrintable(result.out + result.err));
+            const QImage page(result.json.value("files").toArray().at(0).toString());
+            QCOMPARE(page.height(), 1050); // 355.6 mm at 75 dpi
+        }
     }
 
     // user-dirs.dirs turns a folder off by setting it to home itself; scans
